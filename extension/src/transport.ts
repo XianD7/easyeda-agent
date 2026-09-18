@@ -380,6 +380,7 @@ export function reconnect(): void {
  * @param showToast - whether to show a toast confirming the stop
  */
 export function stop(showToast = true): void {
+	bootstrapGeneration += 1;
 	connectionAnnounced = false;
 	suspended = true; // keep the watchdog from auto-reconnecting after an explicit stop
 	cancelConnectionFlow();
@@ -439,6 +440,7 @@ export function start(): void {
 // normally, this has already run and activate() becomes a no-op (start() is
 // guarded above, startWatchdog() is guarded internally).
 let bootstrappedFromModuleLoad = false;
+let bootstrapGeneration = 0;
 
 /**
  * Start the transport from the extension module body.
@@ -451,11 +453,12 @@ export function bootstrapFromModuleLoad(): void {
 		return;
 	}
 	bootstrappedFromModuleLoad = true;
+	const generation = bootstrapGeneration;
 	// Also the load-time probe: seeing this line in the editor's 日志 panel proves
 	// the host evaluated the bundle even though it never called activate().
 	diag('module evaluated — self-bootstrapping the transport (host activate() is not required)');
 	const begin = (): void => {
-		if (handshakeVerified) {
+		if (generation !== bootstrapGeneration || handshakeVerified) {
 			return;
 		}
 		try {
