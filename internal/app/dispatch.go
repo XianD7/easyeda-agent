@@ -118,6 +118,7 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		OK     bool `json:"ok"`
 		Result struct {
 			PrimitiveID any    `json:"primitiveId"`
+			Saved       any    `json:"saved"`
 			Imported    bool   `json:"imported"`
 			Confirm     string `json:"confirm"`
 			OK          *bool  `json:"ok"`
@@ -168,6 +169,10 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		return libraryWriteResultError(action, envelope.Result, respBody)
 	}
 	switch action {
+	case "schematic.save", "pcb.save":
+		if parsed.Result.Saved != true || parsed.Result.Partial {
+			return fmt.Errorf("%s: save was not confirmed (boolean saved:true required; saved=%#v, partial=%t); preserve the returned response and current document state before retrying", action, parsed.Result.Saved, parsed.Result.Partial)
+		}
 	case "pcb.import_changes":
 		return pcbImportResultError(action, map[string]any{"imported": parsed.Result.Imported,
 			"confirm": parsed.Result.Confirm, "verified": parsed.Result.Verified != nil && *parsed.Result.Verified,

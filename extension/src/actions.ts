@@ -15,7 +15,7 @@ import { armDeadline } from './deadlines';
 import { exactJSON, preservedInstance } from './preserve-instance';
 import { barePcbRuleConfiguration, pcbRulesEqual, planPcbConfig } from './pcb-config';
 import { pcbNetColorSet } from './pcb-net-color';
-import { documentTypeLabel, readResponseContext } from './eda-context';
+import { documentTypeLabel, mutationContextError, readResponseContext } from './eda-context';
 import { getSchematicNetlistFile, NetlistContextError } from './schematic-netlist-file';
 import { renameSchematicPage } from './schematic-page-rename';
 import { assertSchematicReadinessContext, captureSchematicReadiness, SchematicReadinessError, SchematicReadinessToken, waitForSchematicReady } from './schematic-readiness';
@@ -4895,7 +4895,36 @@ const schematicBridgeCheck: Handler = async (payload) => {
 
 // ─── Save ─────────────────────────────────────────────────────────────
 
-const schematicSave: Handler = async () => {
+/** Check the active host immediately before save, when this handler reaches FIFO execution. */
+async function assertSaveContext(payload: Payload, documentType: 'schematic' | 'pcb'): Promise<void> {
+	if (payload.expectedContext === undefined) return;
+	if (typeof payload.expectedContext !== 'object' || payload.expectedContext === null || Array.isArray(payload.expectedContext)) {
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'expectedContext must contain projectUuid, documentUuid and documentType.');
+	}
+	const expected = payload.expectedContext as Payload;
+	const expectedContext = {
+		projectUuid: requireString(expected, 'projectUuid'),
+		documentUuid: requireString(expected, 'documentUuid'),
+		documentType: requireString(expected, 'documentType'),
+		tabId: expected.tabId === undefined ? undefined : requireString(expected, 'tabId'),
+	};
+	if (expectedContext.documentType !== documentType) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${documentType}.save refused: expectedContext.documentType must be ${documentType}.`);
+	}
+	const actualContext = await readResponseContext();
+	const keys: Array<keyof typeof expectedContext> = ['projectUuid', 'documentUuid', 'documentType'];
+	if (expectedContext.tabId !== undefined) keys.push('tabId');
+	const unavailableFields = keys.filter(key => typeof actualContext[key] !== 'string' || actualContext[key] === '');
+	const mismatchedFields = keys.filter(key => actualContext[key] !== expectedContext[key]);
+	if (unavailableFields.length > 0 || mismatchedFields.length > 0) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,
+			`${documentType}.save refused: active project/document context is unavailable or differs from expectedContext.`,
+			JSON.stringify({ expectedContext, actualContext, unavailableFields, mismatchedFields }));
+	}
+}
+
+const schematicSave: Handler = async (payload) => {
+	await assertSaveContext(payload, 'schematic');
 	let saved;
 	try {
 		saved = await eda.sch_Document.save();
@@ -13035,7 +13064,8 @@ const pcbViaCreate: Handler = async (payload) => {
  * PCB edits (track/via/move/import) are in-memory until saved, and this is what
  * the daemon's debounced autosave fires for a PCB window.
  */
-const pcbSave: Handler = async () => {
+const pcbSave: Handler = async (payload) => {
+	await assertSaveContext(payload, 'pcb');
 	let saved;
 	try {
 		saved = await eda.pcb_Document.save();
@@ -15220,9 +15250,19 @@ export async function runAction(
 		throw new ActionError(ErrorCodes.EDA_API_UNAVAILABLE, 'The eda object is not available in this context.');
 	}
 
+	const before = await readResponseContext();
 	const result = await handler(asPayload(payload));
-	if (!result.context) {
-		result.context = await readResponseContext();
+	const after = await readResponseContext();
+	if (!result.context) result.context = after;
+	let identityError = mutationContextError(before, after);
+	// Source handlers carry their own target readback (or an explicit empty
+	// context after a failed read). Never certify a different/unknown handler
+	// target merely because the ambient samples happen to agree.
+	if (identityError === undefined && result.context !== after) {
+		identityError = mutationContextError({ ...result.context, tabId: result.context?.tabId ?? after.tabId }, after);
 	}
+	result.mutationContext = { ...before };
+	result.mutationContextAvailable = identityError === undefined;
+	if (identityError !== undefined) result.mutationContextError = identityError;
 	return result;
 }

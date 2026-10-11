@@ -9,20 +9,43 @@ import (
 	"github.com/zhoushoujianwork/easyeda-agent/internal/protocol"
 )
 
+func testAutosaveTarget(windowID, docType string) autosaveTarget {
+	return autosaveTarget{WindowID: windowID, SaveAction: saveActionForDocType(docType), Context: protocol.Context{ProjectUUID: "project-1", DocumentUUID: "doc-" + docType, DocumentType: docType, TabID: "tab-1"}}
+}
+
+func testAutosaveResponse(target autosaveTarget) *protocol.Response {
+	ctx := target.Context
+	mutationCtx := target.Context
+	available := true
+	return &protocol.Response{OK: true, Context: &ctx, MutationContext: &mutationCtx, MutationContextAvailable: &available}
+}
+
+func testAutosaveTicket(t *testing.T, a *autosaver, target autosaveTarget) autosaveTicket {
+	t.Helper()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e := a.timers[target.key()]
+	if e == nil {
+		t.Fatalf("no pending autosave for %+v", target)
+	}
+	return e.ticket
+}
+
 func TestAutosaver_CoalescesBurst(t *testing.T) {
 	var calls atomic.Int32
 	var gotWindow, gotAction string
 	var mu sync.Mutex
-	a := newAutosaver(40*time.Millisecond, func(windowID, saveAction string) {
+	a := newAutosaver(40*time.Millisecond, func(ticket autosaveTicket) {
 		calls.Add(1)
 		mu.Lock()
-		gotWindow, gotAction = windowID, saveAction
+		gotWindow, gotAction = ticket.WindowID, ticket.SaveAction
 		mu.Unlock()
 	})
+	defer a.stop()
 
 	// A burst of 5 edits within the debounce window must collapse to ONE save.
 	for range 5 {
-		a.schedule("win-1", "schematic.save")
+		a.schedule(testAutosaveTarget("win-1", "schematic"))
 		time.Sleep(5 * time.Millisecond)
 	}
 	time.Sleep(120 * time.Millisecond)
@@ -39,9 +62,10 @@ func TestAutosaver_CoalescesBurst(t *testing.T) {
 
 func TestAutosaver_PerWindowIndependent(t *testing.T) {
 	var calls atomic.Int32
-	a := newAutosaver(30*time.Millisecond, func(_, _ string) { calls.Add(1) })
-	a.schedule("win-1", "schematic.save")
-	a.schedule("win-2", "schematic.save")
+	a := newAutosaver(30*time.Millisecond, func(autosaveTicket) { calls.Add(1) })
+	defer a.stop()
+	a.schedule(testAutosaveTarget("win-1", "schematic"))
+	a.schedule(testAutosaveTarget("win-2", "schematic"))
 	time.Sleep(90 * time.Millisecond)
 	if n := calls.Load(); n != 2 {
 		t.Fatalf("expected one save per window (2), got %d", n)
@@ -50,8 +74,8 @@ func TestAutosaver_PerWindowIndependent(t *testing.T) {
 
 func TestAutosaver_StopCancelsPending(t *testing.T) {
 	var calls atomic.Int32
-	a := newAutosaver(40*time.Millisecond, func(_, _ string) { calls.Add(1) })
-	a.schedule("win-1", "schematic.save")
+	a := newAutosaver(40*time.Millisecond, func(autosaveTicket) { calls.Add(1) })
+	a.schedule(testAutosaveTarget("win-1", "schematic"))
 	a.stop() // cancel before it fires
 	time.Sleep(80 * time.Millisecond)
 	if n := calls.Load(); n != 0 {
@@ -61,8 +85,8 @@ func TestAutosaver_StopCancelsPending(t *testing.T) {
 
 func TestAutosaver_DisabledIsNoop(t *testing.T) {
 	var calls atomic.Int32
-	a := newAutosaver(0, func(_, _ string) { calls.Add(1) }) // 0 = disabled
-	a.schedule("win-1", "schematic.save")
+	a := newAutosaver(0, func(autosaveTicket) { calls.Add(1) }) // 0 = disabled
+	a.schedule(testAutosaveTarget("win-1", "schematic"))
 	time.Sleep(40 * time.Millisecond)
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("zero-debounce autosaver must be a no-op, got %d calls", n)
@@ -96,17 +120,21 @@ func TestMutatesActionMap(t *testing.T) {
 	}
 }
 
-func TestDocumentSourceProbeDoesNotAutosave(t *testing.T) {
-	// Persistence is a separate explicit probe step, including for a real
-	// same-source setter. Future action routing must not silently save it.
-	s := &Server{autosave: newAutosaver(time.Hour, func(_, _ string) { t.Error("unexpected source autosave") })}
+func TestDocumentSourceProbeReadPreviewAndLegacyDoNotAutosave(t *testing.T) {
+	// Reads/previews do not arm autosave. A real source write from a legacy
+	// connector remains unavailable even if its diagnostic context is complete.
+	s := &Server{autosave: newAutosaver(time.Hour, func(autosaveTicket) { t.Error("unexpected source autosave") })}
 	defer s.autosave.stop()
 	for _, req := range []*protocol.Request{
 		{Envelope: protocol.Envelope{WindowID: "w"}, Action: "document.source.get"},
 		{Envelope: protocol.Envelope{WindowID: "w"}, Action: "document.source.roundtrip", Payload: map[string]any{"dryRun": true}},
 		{Envelope: protocol.Envelope{WindowID: "w"}, Action: "document.source.roundtrip", Payload: map[string]any{"dryRun": false}},
 	} {
-		s.maybeAutosave(req)
+		resp := testAutosaveResponse(testAutosaveTarget("w", "pcb"))
+		if requestMutates(req) {
+			resp.MutationContextAvailable, resp.MutationContext = nil, nil
+		}
+		s.maybeAutosave(req, resp, time.Now())
 	}
 	if len(s.autosave.timers) != 0 {
 		t.Fatal("source probe armed autosave")
@@ -125,13 +153,15 @@ func TestDocumentSourceProbeDoesNotAutosave(t *testing.T) {
 // to the user like the preview touched the board).
 func TestMaybeAutosave_DryRunDoesNotArm(t *testing.T) {
 	var armed atomic.Int32
-	s := &Server{autosave: newAutosaver(10*time.Millisecond, func(_, _ string) { armed.Add(1) })}
+	s := &Server{autosave: newAutosaver(10*time.Millisecond, func(autosaveTicket) { armed.Add(1) })}
+	defer s.autosave.stop()
+	target := testAutosaveTarget("w1", "pcb")
 
 	s.maybeAutosave(&protocol.Request{
 		Envelope: protocol.Envelope{WindowID: "w1"},
 		Action:   "pcb.page.clear",
 		Payload:  map[string]any{"dryRun": true},
-	})
+	}, testAutosaveResponse(target), time.Now())
 	time.Sleep(40 * time.Millisecond)
 	if n := armed.Load(); n != 0 {
 		t.Errorf("a dry-run preview must not arm autosave, fired %d save(s)", n)
@@ -142,7 +172,7 @@ func TestMaybeAutosave_DryRunDoesNotArm(t *testing.T) {
 		Envelope: protocol.Envelope{WindowID: "w1"},
 		Action:   "pcb.page.clear",
 		Payload:  map[string]any{"dryRun": false},
-	})
+	}, testAutosaveResponse(target), time.Now())
 	time.Sleep(40 * time.Millisecond)
 	if n := armed.Load(); n != 1 {
 		t.Errorf("a real pcb.page.clear must arm exactly 1 autosave, got %d", n)
@@ -158,13 +188,17 @@ func TestMaybeAutosave_DryRunDoesNotArm(t *testing.T) {
 func TestDeferAutosave_BusyWindowPushesTheSaveBack(t *testing.T) {
 	var saved atomic.Int32
 	s := &Server{queueBlocks: newQueueBlockTracker()}
-	s.autosave = newAutosaver(10*time.Millisecond, func(_, _ string) { saved.Add(1) })
+	s.autosave = newAutosaver(10*time.Millisecond, func(autosaveTicket) { saved.Add(1) })
+	defer s.autosave.stop()
+	target := testAutosaveTarget("w1", "schematic")
+	s.autosave.schedule(target)
+	ticket := testAutosaveTicket(t, s.autosave, target)
 
 	release := s.beginClientAction("w1")
 	if got := s.clientActionsInFlight("w1"); got != 1 {
 		t.Fatalf("in-flight count = %d, want 1", got)
 	}
-	if !s.deferAutosave("w1", "schematic.save") {
+	if !s.deferAutosave(ticket) {
 		t.Fatal("a save must never be injected while a client action is in flight on that window")
 	}
 
@@ -181,8 +215,11 @@ func TestDeferAutosave_BusyWindowPushesTheSaveBack(t *testing.T) {
 
 func TestDeferAutosave_IdleWindowSavesImmediately(t *testing.T) {
 	s := &Server{queueBlocks: newQueueBlockTracker()}
-	s.autosave = newAutosaver(10*time.Millisecond, func(_, _ string) {})
-	if s.deferAutosave("w1", "schematic.save") {
+	s.autosave = newAutosaver(time.Hour, func(autosaveTicket) {})
+	defer s.autosave.stop()
+	target := testAutosaveTarget("w1", "schematic")
+	s.autosave.schedule(target)
+	if s.deferAutosave(testAutosaveTicket(t, s.autosave, target)) {
 		t.Fatal("an idle window must save right away — this gate must not slow the normal path")
 	}
 }
@@ -190,34 +227,41 @@ func TestDeferAutosave_IdleWindowSavesImmediately(t *testing.T) {
 func TestDeferAutosave_BlockedQueueAlsoDefers(t *testing.T) {
 	now := time.Unix(6000, 0)
 	s := &Server{queueBlocks: clockTracker(&now)}
-	s.autosave = newAutosaver(10*time.Millisecond, func(_, _ string) {})
+	s.autosave = newAutosaver(time.Hour, func(autosaveTicket) {})
+	defer s.autosave.stop()
+	target := testAutosaveTarget("w1", "schematic")
+	s.autosave.schedule(target)
 	s.queueBlocks.beginProbe("w1", "schematic.power.connect_pin", "req_1", now)
 	now = now.Add(queueBlockGrace * 2)
-	if !s.deferAutosave("w1", "schematic.save") {
+	if !s.deferAutosave(testAutosaveTicket(t, s.autosave, target)) {
 		t.Fatal("pushing a save at a queue that is already proven blocked only lengthens the backlog")
 	}
 }
 
 func TestDeferAutosave_CapKeepsItASafetyNet(t *testing.T) {
 	s := &Server{queueBlocks: newQueueBlockTracker()}
-	s.autosave = newAutosaver(10*time.Millisecond, func(_, _ string) {})
+	s.autosave = newAutosaver(time.Hour, func(autosaveTicket) {})
+	defer s.autosave.stop()
+	target := testAutosaveTarget("w1", "schematic")
+	s.autosave.schedule(target)
+	ticket := testAutosaveTicket(t, s.autosave, target)
 	release := s.beginClientAction("w1")
 	defer release()
 
-	if !s.deferAutosave("w1", "schematic.save") {
+	if !s.deferAutosave(ticket) {
 		t.Fatal("first call defers")
 	}
 	// Rewind the deferral clock past the cap: a long busy stretch must not mean
 	// "never saved" — past autosaveMaxDefer the save goes in regardless.
 	s.autosave.mu.Lock()
-	s.autosave.deferredSince["w1"] = time.Now().Add(-autosaveMaxDefer - time.Second)
+	s.autosave.timers[target.key()].deferredSince = time.Now().Add(-autosaveMaxDefer - time.Second)
 	s.autosave.mu.Unlock()
 
-	if s.deferAutosave("w1", "schematic.save") {
+	if s.deferAutosave(ticket) {
 		t.Fatal("past autosaveMaxDefer the save must go through even on a busy window")
 	}
 	s.autosave.mu.Lock()
-	_, stillDeferred := s.autosave.deferredSince["w1"]
+	stillDeferred := !s.autosave.timers[target.key()].deferredSince.IsZero()
 	s.autosave.mu.Unlock()
 	if stillDeferred {
 		t.Error("the deferral clock must reset once a save is let through")

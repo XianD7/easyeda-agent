@@ -45,12 +45,19 @@ type Request struct {
 
 type Response struct {
 	Envelope
-	OK        bool           `json:"ok"`
-	Result    map[string]any `json:"result,omitempty"`
-	Context   *Context       `json:"context,omitempty"`
-	Artifacts []Artifact     `json:"artifacts,omitempty"`
-	Warnings  []string       `json:"warnings,omitempty"`
-	Error     *ErrorInfo     `json:"error,omitempty"`
+	OK      bool           `json:"ok"`
+	Result  map[string]any `json:"result,omitempty"`
+	Context *Context       `json:"context,omitempty"`
+	// MutationContext is the connector's pre-handler sample. It identifies the
+	// mutation/save target only when MutationContextAvailable is explicitly true;
+	// otherwise it is diagnostic evidence, never a fallback autosave target.
+	// Boundary samples cannot detect an ABA page switch during the handler.
+	MutationContext          *Context   `json:"mutationContext,omitempty"`
+	MutationContextAvailable *bool      `json:"mutationContextAvailable,omitempty"`
+	MutationContextError     string     `json:"mutationContextError,omitempty"`
+	Artifacts                []Artifact `json:"artifacts,omitempty"`
+	Warnings                 []string   `json:"warnings,omitempty"`
+	Error                    *ErrorInfo `json:"error,omitempty"`
 	// StaleRisk is a daemon-attached advisory set on PCB read actions
 	// (list/DRC/report …) that arrive after a PCB mutation but before a `doc
 	// reload`: the per-document engine state may serve stale data (SKILL iron

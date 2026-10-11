@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runAction } from './actions';
 
-test('project source export preserves official archive bytes and checks current project twice', async () => {
+test('project source export preserves official archive bytes and checks current project around archive getter', async () => {
 	const bytes = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0, 255, 42]);
 	const calls: unknown[][] = [];
 	(globalThis as any).eda = {
@@ -16,9 +16,10 @@ test('project source export preserves official archive bytes and checks current 
 	};
 	try {
 		const got: any = await runAction('project.export_source', { uuid: 'project-id' });
-		assert.deepEqual(calls.slice(0, 3), [
-			['current'], ['export', 'easyeda-agent-project.epro2', undefined, 'epro2'], ['current'],
-		]);
+		assert.deepEqual(calls.filter(call => call[0] === 'export'), [['export', 'easyeda-agent-project.epro2', undefined, 'epro2']]);
+		const exportIndex = calls.findIndex(call => call[0] === 'export');
+		assert.equal(calls[exportIndex - 1]?.[0], 'current', 'current project must be read before the archive getter');
+		assert.equal(calls[exportIndex + 1]?.[0], 'current', 'current project must be rechecked after the archive getter');
 		assert.equal(got.result.size, bytes.length);
 		assert.equal(got.result.artifactId, got.artifacts[0].id);
 		assert.deepEqual(Buffer.from(got.artifacts[0].inlineBase64, 'base64'), Buffer.from(bytes));
@@ -27,19 +28,23 @@ test('project source export preserves official archive bytes and checks current 
 });
 
 test('project source export rejects identity mismatch before or after getter', async () => {
-	for (const current of [['wrong'], ['project-id', 'wrong']]) {
-		let reads = 0;
+	for (const phase of ['before', 'after'] as const) {
+		let currentProject = phase === 'before' ? 'wrong' : 'project-id';
 		let exports = 0;
 		(globalThis as any).eda = {
-			dmt_Project: { getCurrentProjectInfo: async () => ({ uuid: current[reads++] }) },
-			sys_FileManager: { getProjectFile: async () => { exports++; return new Blob(['archive']); } },
+			dmt_Project: { getCurrentProjectInfo: async () => ({ uuid: currentProject }) },
+			sys_FileManager: { getProjectFile: async () => {
+				exports++;
+				if (phase === 'after') currentProject = 'wrong';
+				return new Blob(['archive']);
+			} },
 		};
 		try {
 			await assert.rejects(
 				() => runAction('project.export_source', { uuid: 'project-id' }),
 				(err: any) => err.code === 'INVALID_STATE' && /project/i.test(err.message),
 			);
-			assert.equal(exports, current.length - 1);
+			assert.equal(exports, phase === 'before' ? 0 : 1, 'identity drift must reject at the actual getter boundary');
 		}
 		finally { delete (globalThis as any).eda; }
 	}

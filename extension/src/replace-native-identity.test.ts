@@ -149,6 +149,7 @@ function facts(error: any): any {
 
 test('native16 replace freshly proves requested device and native source while preserving instance identity', async t => {
 	const f = harness(), result = await replace(t, f);
+	assert.equal(result.mutationContextAvailable, true);
 	assert.deepEqual(result.result.device, { uuid: NEW_DEVICE, libraryUuid: NEW_LIBRARY });
 	assert.equal(result.result.previousDevice.uuid, OLD_DEVICE);
 	assert.equal(result.result.component.footprint.uuid, CANDIDATE_FP_INSTANCE);

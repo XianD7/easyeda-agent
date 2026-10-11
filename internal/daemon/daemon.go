@@ -172,6 +172,7 @@ type health struct {
 	// per-action buckets (actions / degradedActions) keep one broken road from
 	// being averaged away. Omitted while no action has been forwarded.
 	WriteHealth map[string]WindowWriteHealth `json:"writeHealth,omitempty"`
+	Autosave    []AutosaveStatus             `json:"autosave,omitempty"`
 }
 
 // routes builds the HTTP handlers. port is the bound port, reported in /health
@@ -195,6 +196,7 @@ func (s *Server) routes(port int) *http.ServeMux {
 			Port:        port,
 			Windows:     s.hub.listAnnotated(s.opts.Version),
 			WriteHealth: s.writeHealth.all(),
+			Autosave:    s.autosave.snapshot(),
 		})
 	})
 	mux.HandleFunc("/eda", s.handleConnect)
