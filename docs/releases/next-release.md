@@ -1,6 +1,6 @@
-# v1.10.0 发布准备
+# v1.10.0 发布记录
 
-当前公开正式版仍为 [v1.9.1](https://github.com/zhoushoujianwork/easyeda-agent/releases/tag/v1.9.1)。
+当前公开正式版为 [v1.10.0](https://github.com/zhoushoujianwork/easyeda-agent/releases/tag/v1.10.0)。
 用户已批准 v1.10.0，指示复用刚完成的验证并直接发布；本轮按明确的有限 CLI/工作流范围交付。
 新动作与字段要求重新导入连接器，按版本规则递增 minor，CLI/daemon、连接器和 Skill 统一为 1.10.0。
 
@@ -20,7 +20,19 @@
 完整设计 E2E 留待 follow-up；已有工程创建无 UUID、官方截图空白、测试夹具 Netlist Error
 及导航超时等失败继续保留，不把工具发布当作电路或制造验收。
 
-当前进入正式版本构建和上传；尚未取得非草稿 Release 前不宣称已发布。
+v1.10.0 于 2026-10-11 14:02:54 UTC 正式发布，非草稿、非预发布。
+附注标签绑定提交 `66b44aab4d833cd0bb6afb6d3b1daa3ad7408817`；正式版本构建与 release-check 通过，
+五平台 CLI、连接器、Skill、安装脚本及验收说明共十项资产，加 checksums.txt 共十一份文件，
+远端名称、大小及 SHA256 全部匹配。GitHub 包保留 205 个 Skill 文件。
+本次只执行正式打包与资产核对，没有重跑最近的工程测试、现场回归或完整 E2E；
+完整验收与失败状态保持冻结报告中的原结论。
+
+SkillHub [自动发布](https://github.com/zhoushoujianwork/easyeda-agent/actions/runs/38145602735)
+被平台“最多 200 个文件”限制拒绝，未同步成功；没有为通过上传而删除设计知识或改写正式包。
+ClawHub 因本机没有 clawhub 命令而未同步。立创连接器市场仍需要人工提交，未在本轮更新。
+上述平台状态与已核验的 GitHub Release 分别记录。
+
+升级 CLI/Skill 使用 `easyeda update`；新增 EDA 动作需重新导入本版连接器 .eext。
 历史有限范围不成为下一版本的默认豁免，完整设计后续仍按仓库验收流程执行。
 
 ## v1.9.1 历史记录
