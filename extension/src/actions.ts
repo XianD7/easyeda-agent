@@ -9407,27 +9407,43 @@ const pcbSilkSet: Handler = async (payload) => {
 	if (typeof raw === 'string') ids = [raw];
 	else if (Array.isArray(raw) && raw.every(v => typeof v === 'string')) ids = raw as Array<string>;
 	else throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'Missing "primitiveIds" (string or string[]).');
-
-	const baseProps: Record<string, unknown> = {};
-	for (const k of ['x', 'y', 'rotation', 'fontFamily', 'fontSize', 'lineWidth', 'text'] as const) {
-		if (payload[k] !== undefined && payload[k] !== null) baseProps[k] = payload[k];
+	if (!ids.length || ids.some(id => !id.trim()) || new Set(ids).size !== ids.length) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'primitiveIds must contain distinct nonempty IDs.');
 	}
 
-	// Optional ALIGN: reposition each silk relative to a reference bbox (a component
-	// designator, "board"/"outline", or "fill"). Modes: center|mid (both axes),
-	// centerx|centery, left|right|top|bottom (edge-align). Computes per-silk from its
-	// own bbox, so the CENTER/edge lands exactly on the reference.
+	const baseProps: Record<string, unknown> = {};
+	const fields = ['x', 'y', 'rotation', 'fontFamily', 'fontSize', 'lineWidth', 'text', 'mirror', 'reverse'] as const;
+	for (const k of fields) {
+		if (!Object.prototype.hasOwnProperty.call(payload, k)) continue;
+		const value = payload[k];
+		if (k === 'mirror' || k === 'reverse') {
+			if (typeof value !== 'boolean') throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${k} must be a boolean.`);
+		}
+		else if (k === 'text' || k === 'fontFamily') {
+			if (typeof value !== 'string' || (k === 'fontFamily' && !value.trim())) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${k} must be ${k === 'fontFamily' ? 'a nonempty' : 'a'} string.`);
+		}
+		else if (typeof value !== 'number' || !Number.isFinite(value) || ((k === 'fontSize' || k === 'lineWidth') && value <= 0)) {
+			throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${k} must be a finite${k === 'fontSize' || k === 'lineWidth' ? ' positive' : ''} number.`);
+		}
+		baseProps[k] = value;
+	}
+
+	// ALIGN uses the current rendered bbox. Restyling/rotating in the same call
+	// would invalidate that geometry; require separate verified calls instead.
 	const align = (optionalString(payload, 'align') ?? '').trim().toLowerCase();
+	if (align && (!['center', 'mid', 'centerx', 'centery', 'left', 'right', 'top', 'bottom'].includes(align) || Object.keys(baseProps).length)) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'align must be a supported mode and cannot be combined with other silk fields; restyle first, then align.');
+	}
 	let refBox: silkRect | null = null;
+	const ref = optionalString(payload, 'ref') ?? 'board';
 	if (align) {
-		const ref = optionalString(payload, 'ref') ?? 'board';
 		refBox = await resolveSilkRefBBox(ref);
-		if (!refBox) {
+		if (!validSilkRect(refBox)) {
 			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, `could not resolve align --ref "${ref}" (use a designator, "board", or "fill").`);
 		}
 	}
 	if (Object.keys(baseProps).length === 0 && !align) {
-		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'nothing to do — provide x/y/rotation/fontFamily/fontSize/lineWidth/text, and/or --align (+ --ref).');
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'nothing to do — provide x/y/rotation/fontFamily/fontSize/lineWidth/text/mirror/reverse, or --align (+ --ref).');
 	}
 	if (typeof baseProps.fontFamily === 'string' && baseProps.fontFamily !== 'default') {
 		try {
@@ -9441,74 +9457,102 @@ const pcbSilkSet: Handler = async (payload) => {
 		catch (err) { throw edaError(err, `Font ${String(baseProps.fontFamily)} is not available to EasyEDA.`); }
 	}
 
-	const attrIds = new Set<string>((await eda.pcb_PrimitiveAttribute.getAll() ?? []).map(a => a.getState_PrimitiveId()));
+	const attrIds = new Set<string>(silkInventory(await eda.pcb_PrimitiveAttribute.getAll(), 'attributes').map(a => a.getState_PrimitiveId()));
 	const results: Array<Record<string, unknown>> = [];
+	// These are attempted writes, including SDK exceptions/no acknowledgements.
+	// Such calls may already have mutated the board and must not be replayed.
+	const appliedIds: string[] = [];
+	let stopped = false;
 	for (const id of ids) {
+		if (stopped) {
+			results.push({ primitiveId: id, ok: false, verified: false, attempted: false, requested: { ...baseProps }, actual: null, error: 'not attempted after an unverified silk write; read back before recomputing' });
+			continue;
+		}
+		const isAttr = attrIds.has(id);
+		const props: Record<string, unknown> = { ...baseProps };
+		const errors: string[] = [];
+		const actual: Record<string, unknown> = {};
+		let attempted = false;
 		try {
-			const isAttr = attrIds.has(id);
-			const props: Record<string, unknown> = { ...baseProps };
-
+			const get = () => isAttr ? eda.pcb_PrimitiveAttribute.get(id) : eda.pcb_PrimitiveString.get(id);
+			const cur = await get();
+			if (!cur || cur.getState_PrimitiveId?.() !== id) throw new Error('silk primitive identity was not found by readback');
 			if (align && refBox) {
-				// Anchor offset: the stored (x,y) vs the rendered bbox min corner.
-				const cur = isAttr ? await eda.pcb_PrimitiveAttribute.get(id) : await eda.pcb_PrimitiveString.get(id);
 				const sb = await eda.pcb_Primitive.getPrimitivesBBox([id]) as silkRect;
-				if (cur && sb) {
-					const offx = (cur.getState_X() ?? sb.minX) - sb.minX;
-					const offy = (cur.getState_Y() ?? sb.minY) - sb.minY;
-					const w = sb.maxX - sb.minX, h = sb.maxY - sb.minY;
-					const rcx = (refBox.minX + refBox.maxX) / 2, rcy = (refBox.minY + refBox.maxY) / 2;
-					let tMinX = sb.minX, tMinY = sb.minY;
-					if (align === 'center' || align === 'mid' || align === 'centerx') tMinX = rcx - w / 2;
-					if (align === 'center' || align === 'mid' || align === 'centery') tMinY = rcy - h / 2;
-					if (align === 'left') tMinX = refBox.minX;
-					if (align === 'right') tMinX = refBox.maxX - w;
-					if (align === 'top') tMinY = refBox.maxY - h;
-					if (align === 'bottom') tMinY = refBox.minY;
-					props.x = tMinX + offx;
-					props.y = tMinY + offy;
+				const x = cur.getState_X(), y = cur.getState_Y();
+				if (!validSilkRect(sb) || typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y)) throw new Error('align requires a valid rendered bbox and finite anchors');
+				const offx = x - sb.minX, offy = y - sb.minY;
+				const w = sb.maxX - sb.minX, h = sb.maxY - sb.minY;
+				const rcx = (refBox.minX + refBox.maxX) / 2, rcy = (refBox.minY + refBox.maxY) / 2;
+				let tMinX = sb.minX, tMinY = sb.minY;
+				if (align === 'center' || align === 'mid' || align === 'centerx') tMinX = rcx - w / 2;
+				if (align === 'center' || align === 'mid' || align === 'centery') tMinY = rcy - h / 2;
+				if (align === 'left') tMinX = refBox.minX;
+				if (align === 'right') tMinX = refBox.maxX - w;
+				if (align === 'top') tMinY = refBox.maxY - h;
+				if (align === 'bottom') tMinY = refBox.minY;
+				props.x = tMinX + offx;
+				props.y = tMinY + offy;
+			}
+
+			const sdkProps = { ...props };
+			if (isAttr && 'text' in sdkProps) { sdkProps.value = sdkProps.text; delete sdkProps.text; }
+			attempted = true;
+			appliedIds.push(id);
+			try {
+				const modified = isAttr ? await eda.pcb_PrimitiveAttribute.modify(id, sdkProps as never) : await eda.pcb_PrimitiveString.modify(id, sdkProps as never);
+				if (!modified) errors.push('modify returned no primitive; the write may already have applied');
+			}
+			catch (err) { errors.push(`modify failed; the write may already have applied: ${String(err)}`); }
+			// Always fresh-read after an attempted modify, even when the SDK throws
+			// or returns undefined. Never use the modify echo as write evidence.
+			const fresh = await get();
+			if (!fresh) throw new Error('modified primitive was not found by fresh readback');
+			actual.primitiveId = fresh.getState_PrimitiveId?.() ?? null;
+			if (actual.primitiveId !== id) errors.push('fresh primitive identity differs');
+			const getters: Record<string, string> = {
+				x: 'getState_X', y: 'getState_Y', rotation: 'getState_Rotation', fontFamily: 'getState_FontFamily',
+				fontSize: 'getState_FontSize', lineWidth: 'getState_LineWidth', mirror: 'getState_Mirror', reverse: 'getState_Reverse',
+				text: isAttr ? 'getState_Value' : 'getState_Text',
+			};
+			for (const [key, want] of Object.entries(props)) {
+				try {
+					const getter = (fresh as unknown as Record<string, unknown>)[getters[key]];
+					const got = typeof getter === 'function' ? getter.call(fresh) : undefined;
+					actual[key] = got ?? null;
+					const matches = typeof want === 'number' ? typeof got === 'number' && Number.isFinite(got) && Math.abs(got - want) <= 1e-6
+						: key === 'fontFamily' ? typeof got === 'string' && got.toLowerCase() === String(want).toLowerCase()
+							: typeof got === typeof want && got === want;
+					if (!matches) errors.push(`${key} readback differs: requested=${String(want)} actual=${String(got)}`);
+				}
+				catch (err) { actual[key] = null; errors.push(`${key} readback failed: ${String(err)}`); }
+			}
+			if (align && refBox) {
+				const bbox = await eda.pcb_Primitive.getPrimitivesBBox([id]);
+				actual.bbox = bbox ?? null;
+				const freshRef = await resolveSilkRefBBox(ref);
+				if (!validSilkRect(bbox) || !validSilkRect(freshRef)) errors.push('fresh align geometry is unavailable');
+				else {
+					if (Object.keys(refBox).some(k => Math.abs(refBox![k as keyof silkRect] - freshRef[k as keyof silkRect]) > 1e-6)) errors.push('align reference bbox changed');
+					const pairs: number[][] = [];
+					if (['center', 'mid', 'centerx'].includes(align)) pairs.push([(bbox.minX + bbox.maxX) / 2, (freshRef.minX + freshRef.maxX) / 2]);
+					if (['center', 'mid', 'centery'].includes(align)) pairs.push([(bbox.minY + bbox.maxY) / 2, (freshRef.minY + freshRef.maxY) / 2]);
+					if (align === 'left') pairs.push([bbox.minX, freshRef.minX]);
+					if (align === 'right') pairs.push([bbox.maxX, freshRef.maxX]);
+					if (align === 'top') pairs.push([bbox.maxY, freshRef.maxY]);
+					if (align === 'bottom') pairs.push([bbox.minY, freshRef.minY]);
+					if (pairs.some(([a, b]) => Math.abs(a - b) > 1e-6)) errors.push('fresh rendered bbox does not satisfy align');
 				}
 			}
-
-			if (Object.keys(props).length === 0) {
-				results.push({ primitiveId: id, ok: false, error: 'nothing to set for this id' });
-				continue;
-			}
-			let modified;
-			if (isAttr) {
-				if ('text' in props) { props.value = props.text; delete props.text; }
-				modified = await eda.pcb_PrimitiveAttribute.modify(id, props as never);
-			}
-			else {
-				modified = await eda.pcb_PrimitiveString.modify(id, props as never);
-			}
-			if (!modified) {
-				results.push({ primitiveId: id, ok: false, verified: false, error: 'modify returned no primitive' });
-				continue;
-			}
-			const actual = isAttr ? await eda.pcb_PrimitiveAttribute.get(id) : await eda.pcb_PrimitiveString.get(id);
-			if (!actual) {
-				results.push({ primitiveId: id, ok: false, verified: false, error: 'modified primitive was not found by readback' });
-				continue;
-			}
-			const requestedFont = typeof props.fontFamily === 'string' ? props.fontFamily : null;
-			const actualFont = actual.getState_FontFamily?.() ?? null;
-			const fontVerified = requestedFont === null
-				|| (typeof actualFont === 'string' && actualFont.toLowerCase() === requestedFont.toLowerCase());
-			results.push({
-				primitiveId: id, ok: fontVerified, verified: fontVerified,
-				requested: { ...props }, actual: {
-					x: actual.getState_X?.() ?? null, y: actual.getState_Y?.() ?? null,
-					fontFamily: actualFont,
-				},
-				fontFamily: actualFont,
-				...(fontVerified ? {} : { error: `fontFamily readback differs: requested=${requestedFont} actual=${String(actualFont)}` }),
-			});
 		}
-		catch (err) {
-			results.push({ primitiveId: id, ok: false, error: String(err) });
-		}
+		catch (err) { errors.push(String(err)); }
+		const verified = errors.length === 0;
+		results.push({ primitiveId: id, ok: verified, verified, attempted, requested: { ...props }, actual,
+			fontFamily: actual.fontFamily ?? null, ...(verified ? {} : { error: errors.join('; ') }) });
+		stopped = !verified;
 	}
-	return { result: { align: align || undefined, count: results.length, results } };
+	const verified = results.length === ids.length && results.every(r => r.verified === true);
+	return { result: { align: align || undefined, count: results.length, requestedIds: ids, verified, partial: !verified && appliedIds.length > 0, appliedIds, results } };
 };
 
 /**

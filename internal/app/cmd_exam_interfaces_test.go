@@ -193,6 +193,22 @@ func TestPcbSilkFontFamilyWiresAddAndSet(t *testing.T) {
 		{"set", "pcb.silk.set", []string{"silk-set", "--ids", "s1,s2", "--font-family", "Arial"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.action == "pcb.silk.set" {
+				result := `{"verified":true,"partial":false,"count":2,"requestedIds":["s1","s2"],"appliedIds":["s1","s2"],"results":[{"primitiveId":"s1","ok":true,"verified":true,"attempted":true,"requested":{"fontFamily":"Arial"},"actual":{"primitiveId":"s1","fontFamily":"Arial"}},{"primitiveId":"s2","ok":true,"verified":true,"attempted":true,"requested":{"fontFamily":"Arial"},"actual":{"primitiveId":"s2","fontFamily":"Arial"}}]}`
+				cfg, calls, cleanup := newAutolayoutTestDaemon(t, func(_ int, _ autolayoutTestCall) string { return `{"ok":true,"result":` + result + `}` })
+				defer cleanup()
+				var out, stderr bytes.Buffer
+				cmd := newPcbCmd(cfg, &out, &stderr)
+				cmd.SetArgs(tc.args)
+				if err := cmd.Execute(); err != nil {
+					t.Fatal(err)
+				}
+				call := calls.snapshot()[0]
+				if call.Action != tc.action || call.Payload["fontFamily"] != "Arial" {
+					t.Fatalf("call=%+v", call)
+				}
+				return
+			}
 			captured := executeExamCommand(t, tc.args,
 				func(cfg *appConfig, stdout, stderr *bytes.Buffer) commandExecutor {
 					return newPcbCmd(cfg, stdout, stderr)

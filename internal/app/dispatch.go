@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -139,12 +140,15 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		return errors.Join(errActionFailed, &actionError{Action: action, Code: parsed.Error.Code,
 			Message: parsed.Error.Message, Detail: parsed.Error.Detail})
 	}
-	if action == "pcb.silk.align" {
+	if action == "pcb.silk.align" || action == "pcb.silk.set" {
 		var envelope struct {
 			Result map[string]any `json:"result"`
 		}
 		if err := json.Unmarshal(respBody, &envelope); err != nil {
 			return errActionFailed
+		}
+		if err := silkSetResultError(action, envelope.Result, respBody); err != nil {
+			return err
 		}
 		return silkAlignmentError(action, envelope.Result)
 	}
@@ -224,6 +228,72 @@ func silkAlignmentError(action string, result map[string]any) error {
 		count, ok := result[key].(float64)
 		if !ok || count != 0 {
 			return &unverifiedSilkAlignmentError{}
+		}
+	}
+	return nil
+}
+
+type unverifiedSilkSetError struct{ rawResponse string }
+
+func (*unverifiedSilkSetError) Error() string {
+	return "pcb.silk.set: write not verified; preserve the raw response, appliedIds and fresh field values before recomputing; do not blindly retry"
+}
+
+func silkSetResultError(action string, result map[string]any, raw []byte) error {
+	if action != "pcb.silk.set" {
+		return nil
+	}
+	failure := &unverifiedSilkSetError{rawResponse: string(raw)}
+	if result["verified"] != true || result["partial"] != false {
+		return failure
+	}
+	ids, idsOK := result["requestedIds"].([]any)
+	applied, appliedOK := result["appliedIds"].([]any)
+	rows, rowsOK := result["results"].([]any)
+	count, countOK := result["count"].(float64)
+	if !idsOK || !appliedOK || !rowsOK || !countOK || len(ids) == 0 || count != float64(len(ids)) || len(rows) != len(ids) || len(applied) != len(ids) {
+		return failure
+	}
+	seen := map[string]bool{}
+	for i, v := range ids {
+		id, ok := v.(string)
+		if !ok || strings.TrimSpace(id) == "" || seen[id] || applied[i] != id {
+			return failure
+		}
+		seen[id] = true
+		row, ok := rows[i].(map[string]any)
+		if !ok || row["primitiveId"] != id || row["ok"] != true || row["verified"] != true || row["attempted"] != true {
+			return failure
+		}
+		requested, reqOK := row["requested"].(map[string]any)
+		actual, actualOK := row["actual"].(map[string]any)
+		if !reqOK || !actualOK || len(requested) == 0 || actual["primitiveId"] != id {
+			return failure
+		}
+		for key, want := range requested {
+			got := actual[key]
+			switch key {
+			case "x", "y", "rotation", "fontSize", "lineWidth":
+				w, wOK := want.(float64)
+				g, gOK := got.(float64)
+				if !wOK || !gOK || math.IsNaN(w) || math.IsInf(w, 0) || math.IsNaN(g) || math.IsInf(g, 0) || math.Abs(w-g) > 1e-6 || ((key == "fontSize" || key == "lineWidth") && w <= 0) {
+					return failure
+				}
+			case "mirror", "reverse":
+				w, wOK := want.(bool)
+				g, gOK := got.(bool)
+				if !wOK || !gOK || w != g {
+					return failure
+				}
+			case "text", "fontFamily":
+				w, wOK := want.(string)
+				g, gOK := got.(string)
+				if !wOK || !gOK || (key == "text" && w != g) || (key == "fontFamily" && (strings.TrimSpace(w) == "" || !strings.EqualFold(w, g))) {
+					return failure
+				}
+			default:
+				return failure
+			}
 		}
 	}
 	return nil
@@ -414,6 +484,9 @@ func requestActionOnce(cfg *appConfig, action, window string, payload any, timeo
 	if err := silkAlignmentError(action, res.Result); err != nil {
 		return res, err
 	}
+	if err := silkSetResultError(action, res.Result, respBody); err != nil {
+		return res, err
+	}
 	return res, pcbImportResultError(action, res.Result)
 }
 
@@ -468,6 +541,9 @@ func dispatchCapture(cfg *appConfig, action, window string, payload any, stdout 
 	}
 	res := &actionResult{OK: parsed.OK, Result: parsed.Result, Artifacts: parsed.Artifacts}
 	if err := silkAlignmentError(action, res.Result); err != nil {
+		return res, err
+	}
+	if err := silkSetResultError(action, res.Result, respBody); err != nil {
 		return res, err
 	}
 	return res, pcbImportResultError(action, res.Result)

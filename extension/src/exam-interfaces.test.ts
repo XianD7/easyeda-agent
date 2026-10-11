@@ -426,18 +426,19 @@ test('pcb.silk.set requires a modify result, a readable primitive, and matching 
 			get: async (id: string) => {
 				if (id === 'missing') return undefined;
 				const font = id === 'wrong-font' ? 'default' : 'Arial';
-				return { getState_FontFamily: () => font, getState_X: () => 10, getState_Y: () => 20 };
+				return { getState_PrimitiveId: () => id, getState_FontFamily: () => font, getState_X: () => 10, getState_Y: () => 20 };
 			},
 		},
 	}, async () => {
-		const res: any = await runAction('pcb.silk.set', {
-			primitiveIds: ['no-result', 'missing', 'wrong-font', 'ok'], fontFamily: 'Arial',
-		});
-		assert.deepEqual(res.result.results.map((item: any) => item.ok), [false, false, false, true]);
-		assert.match(res.result.results[0].error, /modify returned no primitive/i);
-		assert.match(res.result.results[1].error, /not found by readback/i);
-		assert.match(res.result.results[2].error, /readback differs/i);
-		assert.equal(res.result.results[3].actual.fontFamily, 'Arial');
+		// Each scenario has its own request: a failed batch now stops before any
+		// later ID can be written, rather than silently continuing after failure.
+		for (const [id, error] of [['no-result', /modify returned no primitive/i], ['missing', /not found by readback/i], ['wrong-font', /readback differs/i], ['ok', null]] as const) {
+			const res: any = await runAction('pcb.silk.set', { primitiveIds: [id], fontFamily: 'Arial' });
+			assert.equal(res.result.verified, error === null);
+			assert.equal(res.result.results[0].ok, error === null);
+			if (error) assert.match(res.result.results[0].error, error);
+			else assert.equal(res.result.results[0].actual.fontFamily, 'Arial');
+		}
 	});
 });
 

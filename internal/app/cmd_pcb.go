@@ -4381,18 +4381,23 @@ restyle later with 'pcb silk-set'.`,
 		var ids string
 		var x, y, rotation, fontSize, lineWidth float64
 		var text, align, ref, fontFamily string
+		var mirror, reverse bool
 		c := &cobra.Command{
 			Use:   "silk-set",
 			Short: "Batch-adjust existing silk: position / rotation / size / text, or align to a reference",
 			Long: `Reconfigure existing silkscreen primitive(s) in ONE batch — component designators
 (位号) and free strings alike. --ids is a CSV of primitiveIds (from 'pcb
 check --json' or a silk list); set any of --x/--y/--rotation/--font-size/--line-width
-/--text and ONLY those keys change.
+/--font-family/--text/--mirror/--reverse and ONLY those keys change.
+Boolean flags accept explicit false: --mirror=false --reverse=false.
+Every requested field must match fresh getters; unverified/partial writes fail.
 
 ALIGN shortcut (--align + --ref): position each silk relative to a reference bbox —
 --ref a component designator, "board"/"outline", or "fill" (default board). --align:
 center|mid (both axes), centerx|centery, or left|right|top|bottom (edge-align). Each
 silk is computed from ITS OWN bbox so the center/edge lands exactly on the reference.
+Restyle/rotate in a separate call before --align; combining them is refused because
+the current bbox cannot certify the geometry after restyling.
 
 NOTE: rotation via the reliable .modify persists, but a 'pcb snapshot' taken before a
 document reload shows the OLD orientation (stale render) — judge success by 'pcb check'
@@ -4401,7 +4406,8 @@ document reload shows the OLD orientation (stale render) — judge success by 'p
 			Example: `  easyeda pcb silk-set --ids id1 --rotation 0
   easyeda pcb silk-set --ids credit --ref board --align centerx   # center the board credit
   easyeda pcb silk-set --ids lbl --ref U1 --align top             # align label to U1's top
-  easyeda pcb silk-set --ids id1,id2 --font-size 45 --line-width 6`,
+  easyeda pcb silk-set --ids id1,id2 --font-size 45 --line-width 6
+  easyeda pcb silk-set --ids id1,id2 --mirror=false --reverse=false`,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if ids == "" {
 					return fmt.Errorf("--ids is required (CSV of primitiveIds)")
@@ -4433,6 +4439,12 @@ document reload shows the OLD orientation (stale render) — judge success by 'p
 				if cmd.Flags().Changed("font-family") {
 					payload["fontFamily"] = fontFamily
 				}
+				if cmd.Flags().Changed("mirror") {
+					payload["mirror"] = mirror
+				}
+				if cmd.Flags().Changed("reverse") {
+					payload["reverse"] = reverse
+				}
 				if align != "" {
 					payload["align"] = align
 					if ref != "" {
@@ -4450,6 +4462,8 @@ document reload shows the OLD orientation (stale render) — judge success by 'p
 		c.Flags().Float64Var(&lineWidth, "line-width", 0, "new stroke width (mil)")
 		c.Flags().StringVar(&text, "text", "", "new text (designators: the value)")
 		c.Flags().StringVar(&fontFamily, "font-family", "", "new font family (for example Arial)")
+		c.Flags().BoolVar(&mirror, "mirror", false, "set mirror explicitly (true or --mirror=false)")
+		c.Flags().BoolVar(&reverse, "reverse", false, "set reverse explicitly (true or --reverse=false)")
 		c.Flags().StringVar(&align, "align", "", "align to --ref: center|mid|centerx|centery|left|right|top|bottom")
 		c.Flags().StringVar(&ref, "ref", "", "align reference: a designator, \"board\"/\"outline\", or \"fill\" (default board)")
 		pcb.AddCommand(c)
