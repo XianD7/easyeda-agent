@@ -28,6 +28,15 @@
 - Keep source roundtrip isolated in the connector FIFO after a timeout until the original handler settles, preventing a late whole-document setter from overtaking later edits.
 - Offline tests cover probe guards and queue isolation. Web execution, save/reload, object/connectivity equality and eprj3 import remain unverified; this is a local development candidate, not a release.
 
+## [1.9.1] - 2026-10-11
+
+- 修复 DSH Git 插件安装时缺少 `index.js` 的分发缺陷（#274）；入口仅导出无副作用的 Cordis `apply`，MCP 与 Skill 由 bundle patch 加载。
+- 根包声明 MCP SDK，分发清单仅包含入口、patch、MCP 源码与公开 Skill，Git 安装无需另行安装嵌套依赖。
+- Windows、macOS、Linux CI 覆盖实际 npm tarball 安装、MCP 握手与离线目录发现；缺少缓存元数据时允许联网，不声明严格断网安装。
+- macOS 独立环境验证 DSH CLI 0.1.5-rc.1（MCP/Skill 模块解析为 rc.3）的真实 Git 安装、Hub v1.4.8 装后入口检查、DSH Web 的 12 个 MCP 工具和 Skill 正文加载。原 Windows 报障环境及 Hub 网页完整安装流程仍待复测，#274 保持 open。
+- DSH bundle、CLI/daemon、连接器资产与 Skill 统一为 1.9.1；连接器运行逻辑与动作契约未变，已有 1.9.x 连接器兼容。
+- 本版仅验收 DSH 分发与加载；完整设计 E2E 保持原状态，未验证的 EDA 设计读写不补签通过。
+
 ## [1.9.0] - 2026-10-01
 
 - Add schematic PNG/JPEG/SVG reference-image import and ID-based geometry management; fix image deletion and explicit intrinsic sizing.
