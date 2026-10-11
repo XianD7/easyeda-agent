@@ -296,7 +296,11 @@ func renderCheckReport(rep checkReport, w io.Writer) {
 	}
 
 	if rep.Passed {
-		fmt.Fprintln(w, "✓ no findings")
+		if len(rep.Findings) == 0 {
+			fmt.Fprintln(w, "✓ no findings")
+		} else {
+			fmt.Fprintf(w, "✓ no blocking findings (%d advisory finding(s))\n", len(rep.Findings))
+		}
 		return
 	}
 	if s.FloatingPins > 0 {

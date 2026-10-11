@@ -22,6 +22,11 @@ type schematicStateExpectation struct {
 	SourceScene     map[string]any                      `json:"sourceScene,omitempty"`
 	PagePrimitives  map[string]any                      `json:"pagePrimitives,omitempty"`
 	OwnedAttributes *schOwnedAttributesExpectation      `json:"ownedAttributes,omitempty"`
+	// Observational provenance for the dedicated zero-drawing source projection.
+	// Native source evidence remains in SourceScene and is still checked exactly.
+	SourceConnectivityProvenance *schUnwiredConnectivityProvenance `json:"sourceConnectivityProvenance,omitempty"`
+	// Audited compile-time delta; SourceScene still guards the exact live source.
+	SourceConnectivityEdits *schConnectivityEdits `json:"sourceConnectivityEdits,omitempty"`
 }
 
 type schematicPartExpectation struct {
@@ -73,8 +78,7 @@ func (d schematicDeviceExpectation) validate() error {
 }
 
 func measuredSchematicDevice(ref string, have map[string]any) (*schematicDeviceExpectation, error) {
-	// The fresh independent proof failure explains why legacy recovery failed;
-	// surface it before the original connector mismatch it was meant to adapt.
+	// Prefer the fresh typed-contract diagnosis while retaining original errors.
 	for _, key := range []string{"deviceIdentityCompatibilityError", "deviceIdentityError"} {
 		if problem, exists := have[key]; exists && problem != nil && problem != "" {
 			return nil, fmt.Errorf("%s device identity is unresolved: %v", ref, problem)
@@ -89,6 +93,9 @@ func measuredSchematicDevice(ref string, have map[string]any) (*schematicDeviceE
 	d := &schematicDeviceExpectation{LibraryUUID: library, UUID: uuid}
 	if err := d.validate(); err != nil {
 		return nil, fmt.Errorf("%s device identity is incomplete or is a placed-instance id; refresh sch list --include-device-identity: %w", ref, err)
+	}
+	if err := validateSchematicTypedDeviceIdentity(have); err != nil {
+		return nil, fmt.Errorf("%s device identity is unresolved: %w", ref, err)
 	}
 	return d, nil
 }
@@ -257,6 +264,7 @@ func (e *schematicStateExpectation) substitutionValue() map[string]any {
 	delete(base, "sourceScene")
 	delete(base, "pagePrimitives")
 	delete(base, "ownedAttributes")
+	delete(base, "sourceConnectivityEdits")
 	if parts, ok := base["parts"].(map[string]any); ok {
 		for _, p := range parts {
 			if part, ok := p.(map[string]any); ok {
@@ -290,6 +298,7 @@ func (e *schematicStateExpectation) check(result any, vars map[string]string) er
 	expected.SourceScene = e.SourceScene
 	expected.PagePrimitives = e.PagePrimitives
 	expected.OwnedAttributes = e.OwnedAttributes
+	expected.SourceConnectivityEdits = e.SourceConnectivityEdits
 	for ref, part := range expected.Parts {
 		part.Instance = e.Parts[ref].Instance
 		for number, pin := range part.Pins {

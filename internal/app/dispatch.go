@@ -1188,9 +1188,9 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 	// any later judgement has a baseline without every command threading one
 	// through by hand (conn_seq.go). Read-only bookkeeping; never fails a call.
 	connSeqObserve(window, cfg.project, respBody)
-	// Old connectors confuse placed footprint handles with library UUIDs.
-	// Adapt fresh identity evidence for every consumer, including Apply guards.
-	return hydrateSchematicIdentityCompatibility(cfg, action, window, payload, respBody, timeout)
+	// Validate the typed identity contract without an implicit second request.
+	// Unsupported old connector evidence remains explicit for every consumer.
+	return validateSchematicIdentityRead(cfg, action, payload, respBody)
 }
 
 // parsePortRange parses "start-end" into two ints.
