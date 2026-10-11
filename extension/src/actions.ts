@@ -18,7 +18,9 @@ import { documentTypeLabel, readResponseContext } from './eda-context';
 import { getSchematicNetlistFile, NetlistContextError } from './schematic-netlist-file';
 import { renameSchematicPage } from './schematic-page-rename';
 import { assertSchematicReadinessContext, captureSchematicReadiness, SchematicReadinessError, SchematicReadinessToken, waitForSchematicReady } from './schematic-readiness';
-import { readProjectFootprintSourceArchive, readProjectNativeSourceArchive } from './native-footprint-source';
+import { readProjectNativeSourceArchive } from './native-footprint-source';
+import { projectDeviceSourceInventory, readNativeDeviceSource, type NativeDeviceSourceEntry } from './native-device-source';
+import { proveNativePlacedDevice, type NativePlacedFootprintSource } from './placed-device-identity';
 import {
 	assertLegacySimpleWireOperation,
 	classifyWireContact,
@@ -53,6 +55,7 @@ import {
 	optionalNumber,
 	optionalString,
 	pickNamedCandidate,
+	projectFootprintSourceInventory,
 	projectSchematicAttributeInventory,
 	readDeviceFootprint,
 	readNativeFootprintSource,
@@ -1269,7 +1272,7 @@ export const schematicComponentsList: Handler = async (payload) => {
 				const identityKey = JSON.stringify([record.device, record.component, record.footprint, record.name, record.supplierId, record.manufacturerId]);
 				let resolved = identityCache.get(identityKey);
 				if (!resolved) {
-					resolved = await resolvePlacedDevice(record, getNativeFootprints);
+					resolved = await resolvePlacedDevice(record, getNativeFootprints, identityReadContext);
 					identityCache.set(identityKey, resolved);
 				}
 				if (resolved.device) {
@@ -1281,7 +1284,7 @@ export const schematicComponentsList: Handler = async (payload) => {
 					};
 					record.deviceResolution = {
 						via: resolved.device.via,
-						...(resolved.device.via === 'lcsc-footprint-source' ? { sameFootprintUUID: true } : {}),
+						...(['lcsc-footprint-source', 'native-device-source'].includes(resolved.device.via) ? { sameFootprintUUID: true } : {}),
 						...(resolved.footprintSource ? { footprintSource: resolved.footprintSource } : {}),
 						...(resolved.lcsc ? { lcsc: resolved.lcsc } : {}),
 						...(resolved.deviceFootprint ? { footprint: resolved.deviceFootprint } : {}),
@@ -5541,6 +5544,7 @@ type FootprintPadSpec = {
 	number: string; layer: number; x: number; y: number; rotation: number;
 	shape: TPCB_PrimitivePadShape; hole: TPCB_PrimitivePadHole | null;
 	metallization: boolean; padType: EPCB_PrimitivePadType;
+	solderMaskAndPasteMaskExpansion?: IPCB_PrimitiveSolderMaskAndPasteMaskExpansion | null;
 };
 type FootprintLineSpec = {
 	layer: number; startX: number; startY: number; endX: number; endY: number; width: number;
@@ -5552,6 +5556,54 @@ function finiteField(raw: Record<string, unknown>, key: string, label: string): 
 		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${label}.${key} must be a finite number.`);
 	}
 	return value;
+}
+
+const FOOTPRINT_APERTURE_KEYS = ['topSolderMask', 'bottomSolderMask', 'topPasteMask', 'bottomPasteMask'] as const;
+
+function parseFootprintApertures(value: unknown, label: string): IPCB_PrimitiveSolderMaskAndPasteMaskExpansion | null | undefined {
+	if (value === undefined) return value;
+	if (value === null) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${label}: rule-based apertures cannot be independently verified by the current public SDK; use explicit numeric fields.`);
+	if (typeof value !== 'object' || Array.isArray(value)) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${label} must be an aperture object or null (follow rules).`);
+	}
+	const raw = value as Record<string, unknown>;
+	const keys = Object.keys(raw);
+	if (keys.length === 0) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${label} must include at least one explicit numeric aperture field.`);
+	const result: IPCB_PrimitiveSolderMaskAndPasteMaskExpansion = {};
+	for (const key of keys) {
+		if (!(FOOTPRINT_APERTURE_KEYS as readonly string[]).includes(key)) {
+			throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `${label}.${key} is not a supported aperture field.`);
+		}
+		result[key as typeof FOOTPRINT_APERTURE_KEYS[number]] = finiteField(raw, key, label);
+	}
+	return result;
+}
+
+async function verifyFootprintApertures(primitive: unknown, id: string, expected: FootprintPadSpec): Promise<void> {
+	if (primitiveIdOf(primitive) !== id) throw new Error(`pad ${expected.number} fresh readback has a different primitive id`);
+	const requested = expected.solderMaskAndPasteMaskExpansion;
+	if (requested === undefined) return;
+	// SDK get()/getAll() rounds aperture values to 0.1 mil. Public reset()
+	// refreshes the same primitive from the host without that display rounding.
+	const pad = primitive as IPCB_PrimitivePad;
+	if (typeof pad.toAsync !== 'function' || typeof pad.reset !== 'function') throw new Error(`pad ${expected.number} precise aperture readback is unavailable`);
+	pad.toAsync();
+	await pad.reset();
+	if (primitiveIdOf(primitive) !== id) throw new Error(`pad ${expected.number} precise readback has a different primitive id`);
+	const getter = (primitive as IPCB_PrimitivePad).getState_SolderMaskAndPasteMaskExpansion;
+	if (typeof getter !== 'function') throw new Error(`pad ${expected.number} fresh aperture readback is unavailable`);
+	const actual = getter.call(primitive);
+	if (requested === null) {
+		if (actual !== null) throw new Error(`pad ${expected.number} did not retain rule-based apertures`);
+		return;
+	}
+	for (const key of FOOTPRINT_APERTURE_KEYS) {
+		if (requested[key] === undefined) continue;
+		const observed = actual?.[key];
+		if (typeof observed !== 'number' || !Number.isFinite(observed) || Math.abs(observed - requested[key]!) > 1e-6) {
+			throw new Error(`pad ${expected.number} aperture ${key} mismatch: requested ${requested[key]}, observed ${String(observed)}`);
+		}
+	}
 }
 
 function parseFootprintBuildSpec(payload: Record<string, unknown>): { pads: FootprintPadSpec[]; lines: FootprintLineSpec[] } {
@@ -5577,6 +5629,7 @@ function parseFootprintBuildSpec(payload: Record<string, unknown>): { pads: Foot
 			hole: (p.hole ?? null) as TPCB_PrimitivePadHole | null,
 			metallization: p.metallization === undefined ? true : Boolean(p.metallization),
 			padType: (p.padType === undefined ? 0 : finiteField(p, 'padType', `pads[${index}]`)) as EPCB_PrimitivePadType,
+			solderMaskAndPasteMaskExpansion: parseFootprintApertures(p.solderMaskAndPasteMaskExpansion, `pads[${index}].solderMaskAndPasteMaskExpansion`),
 		};
 	});
 	const numbers = new Set<string>();
@@ -5710,10 +5763,16 @@ const libraryFootprintBuild: Handler = async (payload) => {
 			const primitive = await eda.pcb_PrimitivePad.create(
 				p.layer as TPCB_LayersOfPad, p.number, p.x, p.y, p.rotation, p.shape,
 				'', p.hole, 0, 0, 0, p.metallization, p.padType,
+				undefined, p.solderMaskAndPasteMaskExpansion,
 			);
 			const id = primitiveIdOf(primitive);
 			if (!primitive || !id) throw new Error(`pad ${p.number} create returned no persistent primitive id`);
 			createdPads.push(id);
+			if (p.solderMaskAndPasteMaskExpansion !== undefined) {
+				const fresh = await eda.pcb_PrimitivePad.get([id]);
+				if (!Array.isArray(fresh) || fresh.length !== 1) throw new Error(`pad ${p.number} fresh aperture readback is incomplete`);
+				await verifyFootprintApertures(fresh[0], id, p);
+			}
 		}
 		for (const l of lines) {
 			// In a footprint editor pcb_PrimitiveLine.create() rejects graphic layers
@@ -5728,14 +5787,20 @@ const libraryFootprintBuild: Handler = async (payload) => {
 			if (!primitive || !id) throw new Error('line create returned no persistent primitive id');
 			createdLines.push(id);
 		}
-		await eda.pcb_Document.save();
+		if (await eda.pcb_Document.save() !== true) throw new Error('Footprint save did not explicitly confirm success');
 		const [padReadback, lineReadback] = await Promise.all([
 			createdPads.length ? eda.pcb_PrimitivePad.get(createdPads) : Promise.resolve([]),
 			createdLines.length ? eda.pcb_PrimitivePolyline.get(createdLines) : Promise.resolve([]),
 		]);
-		const verified = padReadback.length === createdPads.length && lineReadback.length === createdLines.length;
+		if (padReadback.length !== createdPads.length || lineReadback.length !== createdLines.length) throw new Error('Footprint post-save primitive readback is incomplete');
+		const padsById = new Map(padReadback.map(p => [primitiveIdOf(p), p]));
+		if (padsById.size !== createdPads.length) throw new Error('Footprint post-save pad IDs are not unique');
+		for (let index = 0; index < pads.length; index++) await verifyFootprintApertures(padsById.get(createdPads[index]), createdPads[index], pads[index]);
+		const lineIds = new Set(lineReadback.map(primitiveIdOf));
+		if (lineIds.size !== createdLines.length || createdLines.some(id => !lineIds.has(id))) throw new Error('Footprint post-save line IDs do not match');
+		const verified = true;
 		return {
-			result: { uuid, libraryUuid, tabId, created: { pads: createdPads, lines: createdLines }, verified },
+			result: { uuid, libraryUuid, tabId, created: { pads: createdPads, lines: createdLines }, verified, apertureVerifiedPads: pads.filter(p => p.solderMaskAndPasteMaskExpansion !== undefined).length },
 			...(verified ? {} : { warnings: ['Footprint geometry was created but immediate primitive readback was incomplete; do not retry blindly.'] }),
 		};
 	}
@@ -6402,6 +6467,7 @@ function sameDeviceRef(a: DeviceRef | undefined, b: DeviceRef | undefined): bool
 async function readRebindDeviceAssociation(
 	device: DeviceRef,
 	kind: 'footprint' | 'symbol',
+	strictIdentity = false,
 ): Promise<{ ref?: DeviceRef; error?: string }> {
 	try {
 		const detail = await withTimeout(
@@ -6409,7 +6475,11 @@ async function readRebindDeviceAssociation(
 			REBIND_OP_TIMEOUT_MS,
 			`Device association readback for "${device.uuid}" timed out after ${REBIND_OP_TIMEOUT_MS}ms.`,
 		);
+		if (strictIdentity && (detail?.uuid !== device.uuid || detail?.libraryUuid !== device.libraryUuid)) {
+			return { error: 'device.get returned a different library device identity' };
+		}
 		const ref = deviceAssociationRef(detail, kind);
+		if (strictIdentity && (!ref || !libraryIdentityUuid(ref.uuid) || !ref.libraryUuid)) return { error: 'device.get returned no complete library asset association' };
 		return ref ? { ref } : { error: `device.get returned no ${kind} association` };
 	}
 	catch (err) { return { error: describeThrown(err) }; }
@@ -6517,8 +6587,33 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 		// Step-level diagnostics via sys_Log (readable back even on daemon timeout).
 		const rlog = (m: string) => { try { eda.sys_Log.add(`[rebind] ${m}`); } catch { /* ignore */ } };
 		rlog(`start ${kind} ${primitiveId}`);
+		const identityContext = await readResponseContext();
 		const component = await getComponentOrThrow(primitiveId);
 		const snapshot = serializeComponent(component);
+		const nativeInstanceDomain = instanceIdentityUuid(readDeviceFootprint(snapshot).uuid);
+		const assertRebindContext = async (): Promise<void> => {
+			if (nativeInstanceDomain) await assertPlacedIdentityContext(identityContext);
+		};
+		const mutate = async <T>(call: () => Promise<T>): Promise<T> => {
+			await assertRebindContext();
+			return call();
+		};
+		const readPlaced = async (id: string): Promise<RebindPresence> => {
+			try {
+				await assertRebindContext();
+				const observed = await readRebindComponent(id);
+				await assertRebindContext();
+				return observed;
+			} catch (err) { return { present: null, error: describeThrown(err) }; }
+		};
+		const readAssociation = async (dev: DeviceRef): Promise<{ ref?: DeviceRef; error?: string }> => {
+			try {
+				await assertRebindContext();
+				const observed = await readRebindDeviceAssociation(dev, kind, nativeInstanceDomain);
+				await assertRebindContext();
+				return observed;
+			} catch (err) { return { error: describeThrown(err) }; }
+		};
 		const oldSymbol = component.getState_Symbol() as DeviceRef | undefined;
 		const oldFootprint = component.getState_Footprint() as DeviceRef | undefined;
 		const originalUniqueId = snapshot.uniqueId;
@@ -6530,7 +6625,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 		}
 		// The REAL 32-char device identity — getState_Component().uuid is a 16-char
 		// placed-symbol id that lib_Device.modify/create reject (live-verified).
-		const device = await resolvePlacedDeviceIdentity(snapshot);
+		const device = await resolvePlacedDeviceIdentity(snapshot, identityContext);
 		rlog(`identity via=${device.via} ${device.uuid}`);
 
 		// Resolve the target footprint/symbol identity.
@@ -6570,7 +6665,17 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 		const newAssoc = kind === 'footprint'
 			? { footprint: { uuid: target.uuid, libraryUuid: target.libraryUuid } }
 			: { symbol: { uuid: target.uuid, libraryUuid: target.libraryUuid } };
-		const oldRef = kind === 'footprint' ? oldFootprint : oldSymbol;
+		const oldPlacedRef = kind === 'footprint' ? oldFootprint : oldSymbol;
+		// Preserve the raw placed 16-hex handle separately. lib_Device.modify
+		// and rollback must use the independently proven 32-hex asset source.
+		const oldRef = kind === 'footprint' && device.footprintSource
+			? { uuid: device.footprintSource.uuid, libraryUuid: device.footprintSource.libraryUuid }
+			: oldPlacedRef;
+		if (nativeInstanceDomain && kind === 'footprint'
+			&& (!device.footprintSource || device.footprintSource.instanceUuid !== oldPlacedRef?.uuid
+				|| device.footprintSource.libraryUuid !== oldPlacedRef.libraryUuid)) {
+			throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Original placed footprint lacks an exact native-to-library association; rollback identity is unproven.');
+		}
 		if (!oldRef?.uuid || !oldRef.libraryUuid) {
 			throw new ActionError(
 				ErrorCodes.PRECONDITION_REFUSED,
@@ -6582,6 +6687,12 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				? { footprint: { uuid: oldRef.uuid, libraryUuid: oldRef.libraryUuid } }
 				: { symbol: { uuid: oldRef.uuid, libraryUuid: oldRef.libraryUuid } })
 			: undefined;
+		if (nativeInstanceDomain) {
+			const originalAssociation = await readAssociation(device);
+			if (!sameDeviceRef(originalAssociation.ref, oldRef)) {
+				throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Original library association changed after the native identity proof; rebind refused before mutation.', originalAssociation.error);
+			}
+		}
 
 		// Replay helpers so both the happy path and rollback re-place identically.
 		const x = typeof snapshot.x === 'number' ? snapshot.x : 0;
@@ -6608,8 +6719,9 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			purpose: 'candidate' | 'rollback-original',
 			onCreatedId?: (primitiveId: string) => void,
 		): Promise<SchComponent> => {
+			await assertRebindContext();
 			const created = await withTimeout(
-				Promise.resolve(eda.sch_PrimitiveComponent.create(
+				mutate(() => eda.sch_PrimitiveComponent.create(
 					{ libraryUuid: dev.libraryUuid, uuid: dev.uuid },
 					x, y, subPartName, rotation, mirror, addIntoBom, addIntoPcb,
 				)),
@@ -6622,7 +6734,8 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			const createdId = created.getState_PrimitiveId();
 			if (!createdId) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, `${purpose} create returned a primitive without an id.`);
 			onCreatedId?.(createdId);
-			const fresh = await readRebindComponent(createdId);
+			await assertRebindContext();
+			const fresh = await readPlaced(createdId);
 			if (fresh.present !== true || !fresh.component) {
 				throw new ActionError(
 					ErrorCodes.EDA_CALL_FAILED,
@@ -6639,10 +6752,11 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			expectedRef: DeviceRef,
 			purpose: 'replacement' | 'rollback-original',
 		): Promise<void> => {
+			await assertRebindContext();
 			const observed = serializeComponent(placed);
 			let resolved: DeviceRef;
 			try {
-				resolved = await resolvePlacedDeviceIdentity(observed);
+				resolved = await resolvePlacedDeviceIdentity(observed, identityContext);
 			}
 			catch (err) {
 				throw new ActionError(
@@ -6658,7 +6772,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 					rebindFactsDetail({ purpose, expectedDevice, actualDevice: resolved, expectedRef }),
 				);
 			}
-			const association = await readRebindDeviceAssociation(expectedDevice, kind);
+			const association = await readAssociation(expectedDevice);
 			if (!sameDeviceRef(association.ref, expectedRef)) {
 				throw new ActionError(
 					ErrorCodes.EDA_CALL_FAILED,
@@ -6674,12 +6788,13 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			expectedRef: DeviceRef,
 			purpose: 'replacement' | 'rollback-original',
 		): Promise<SchComponent> => {
+			await assertRebindContext();
 			await withTimeout(
-				Promise.resolve(eda.sch_PrimitiveComponent.modify(primitiveIdToRestore, restoreProps)),
+				mutate(() => eda.sch_PrimitiveComponent.modify(primitiveIdToRestore, restoreProps)),
 				REBIND_OP_TIMEOUT_MS,
 				`Identity/property restore for component "${primitiveIdToRestore}" did not settle within ${REBIND_OP_TIMEOUT_MS}ms. The write may still land late; fresh readback is mandatory.`,
 			);
-			const fresh = await readRebindComponent(primitiveIdToRestore);
+			const fresh = await readPlaced(primitiveIdToRestore);
 			if (fresh.present !== true || !fresh.component) {
 				throw new ActionError(
 					ErrorCodes.EDA_CALL_FAILED,
@@ -6742,7 +6857,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 		let inPlaceCallError: string | undefined;
 		try {
 			const returned = await withTimeout(
-				Promise.resolve(eda.lib_Device.modify(device.uuid, device.libraryUuid, undefined, undefined, newAssoc)),
+				mutate(() => eda.lib_Device.modify(device.uuid, device.libraryUuid, undefined, undefined, newAssoc)),
 				REBIND_OP_TIMEOUT_MS,
 				`Device association update did not settle within ${REBIND_OP_TIMEOUT_MS}ms. It may land late; the canvas is still unchanged, but do not retry the rebind or run PCB import-changes until fresh library and schematic readback.`,
 			);
@@ -6753,7 +6868,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			inPlaceCall = 'rejected';
 			inPlaceCallError = describeThrown(err);
 		}
-		const applied = await readRebindDeviceAssociation(device, kind);
+		const applied = await readAssociation(device);
 		const inPlaceOk = sameDeviceRef(applied.ref, target);
 		const associationStillOriginal = sameDeviceRef(applied.ref, oldRef);
 		rlog(`in-place modify call=${inPlaceCall} readback=${inPlaceOk ? 'target' : associationStillOriginal ? 'original' : 'unknown'}`);
@@ -6761,14 +6876,14 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			const rollbackErrors: Array<string> = [];
 			try {
 				await withTimeout(
-					Promise.resolve(eda.lib_Device.modify(device.uuid, device.libraryUuid, undefined, undefined, rollbackAssoc)),
+					mutate(() => eda.lib_Device.modify(device.uuid, device.libraryUuid, undefined, undefined, rollbackAssoc)),
 					REBIND_OP_TIMEOUT_MS,
 					`Rollback after ambiguous in-place ${kind} association did not settle within ${REBIND_OP_TIMEOUT_MS}ms.`,
 				);
 			}
 			catch (err) { rollbackErrors.push(describeThrown(err)); }
-			const rolledBack = await readRebindDeviceAssociation(device, kind);
-			const oldPresence = await readRebindComponent(primitiveId);
+			const rolledBack = await readAssociation(device);
+			const oldPresence = await readPlaced(primitiveId);
 			const rollbackVerified = sameDeviceRef(rolledBack.ref, oldRef)
 				&& oldPresence.present === true && rollbackErrors.length === 0;
 			throw new ActionError(
@@ -6822,8 +6937,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				const attemptCopy = async (name: string): Promise<string | undefined> => {
 					rlog(`copy start ${name}`);
 					const got = await withTimeout(
-						eda.lib_Device
-							.copy(device.uuid, device.libraryUuid, personalLib as string, undefined, name)
+						mutate(() => eda.lib_Device.copy(device.uuid, device.libraryUuid, personalLib as string, undefined, name))
 							.catch((e) => { rlog(`copy rejected: ${String(e && (e as Error).message || e).slice(0, 80)}`); return undefined; })
 							.then(v => v ?? undefined),
 						REBIND_OP_TIMEOUT_MS,
@@ -6836,20 +6950,31 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 					// scope does NOT surface personal-library devices).
 					try {
 						const hits = (await eda.lib_Device.search(name, personalLib)) as unknown as Array<Record<string, unknown>>;
-						const hit = (Array.isArray(hits) ? hits : []).find(h => h.name === name && typeof h.uuid === 'string');
+						const exact = (Array.isArray(hits) ? hits : []).filter(h => h.name === name && typeof h.uuid === 'string'
+							&& (!nativeInstanceDomain || (h.libraryUuid === personalLib && libraryIdentityUuid(h.uuid))));
+						if (exact.length > 1) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Multiple exact personal-library clones were found; no first-hit identity is permitted.');
+						const hit = exact[0];
 						rlog(`landed check: ${hit ? 'found' : 'missing'}`);
 						return hit ? hit.uuid as string : undefined;
 					}
-					catch { return undefined; }
+					catch (err) { if (err instanceof ActionError) throw err; return undefined; }
 				};
 				// Reuse an existing same-named clone (repeat rebinds of the same
 				// family) — skips the copy entirely; the clone is modified to the
 				// target association right below either way.
 				try {
 					const pre = (await eda.lib_Device.search(cloneName, personalLib)) as unknown as Array<Record<string, unknown>>;
-					const hit = (Array.isArray(pre) ? pre : []).find(h => h.name === cloneName && typeof h.uuid === 'string');
+					const exact = (Array.isArray(pre) ? pre : []).filter(h => h.name === cloneName && typeof h.uuid === 'string'
+						&& (!nativeInstanceDomain || (h.libraryUuid === personalLib && libraryIdentityUuid(h.uuid))));
+					if (exact.length > 1) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Multiple exact personal-library clones were found; reuse is ambiguous.');
+					const hit = exact[0];
 					if (hit) {
 						const detail = await eda.lib_Device.get(hit.uuid as string, personalLib);
+						if (nativeInstanceDomain && (detail?.uuid !== hit.uuid || detail?.libraryUuid !== personalLib
+							|| detail.property?.manufacturerId !== snapshot.manufacturerId
+							|| detail.property?.supplierId !== snapshot.supplierId)) {
+							throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Personal clone detail conflicts with the exact original model/supplier identity.');
+						}
 						const previousRef = deviceAssociationRef(detail, kind);
 						if (previousRef) {
 							copied = hit.uuid as string;
@@ -6858,7 +6983,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 						}
 					}
 				}
-				catch { /* fall through to copy */ }
+				catch (err) { if (err instanceof ActionError) throw err; /* fall through to copy */ }
 				if (!copied) copied = await attemptCopy(cloneName);
 				if (!copied) copied = await attemptCopy(`${cloneName}_2`);
 				if (!copied) {
@@ -6870,7 +6995,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				let cloneModOk = false;
 				try {
 					cloneModOk = (await withTimeout(
-						Promise.resolve(eda.lib_Device.modify(copied, personalLib, undefined, undefined, newAssoc)),
+						mutate(() => eda.lib_Device.modify(copied as string, personalLib as string, undefined, undefined, newAssoc)),
 						REBIND_OP_TIMEOUT_MS,
 						`Device clone association update did not settle within ${REBIND_OP_TIMEOUT_MS}ms. It may land late; do not retry the rebind until fresh library and schematic readback.`,
 					)) !== false;
@@ -6881,7 +7006,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				}
 				rlog(`clone modify: ${cloneModOk}`);
 				if (!cloneModOk) {
-					try { await eda.lib_Device.delete(copied, personalLib); } catch { /* best-effort */ }
+					try { await mutate(() => eda.lib_Device.delete(copied as string, personalLib as string)); } catch { /* best-effort */ }
 					throw new ActionError(
 						ErrorCodes.EDA_CALL_FAILED,
 						`Failed to bind the new ${kind} onto the personal-library clone "${cloneName}" (clone removed, canvas unchanged).`,
@@ -6910,19 +7035,21 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 
 		const rollback = async (): Promise<Record<string, unknown>> => {
 			const errors: Array<string> = [];
+			try { await assertRebindContext(); }
+			catch (err) { return { attempted: false, verified: false, errors: [describeThrown(err)], contextUnavailable: true }; }
 			let candidatePresence: RebindPresence = candidateId
-				? await readRebindComponent(candidateId)
+				? await readPlaced(candidateId)
 				: { present: candidateMayLandLate ? null : false };
 			if (candidateId && candidatePresence.present !== false) {
 				try {
 					await withTimeout(
-						Promise.resolve(eda.sch_PrimitiveComponent.delete(candidateId)),
+						mutate(() => eda.sch_PrimitiveComponent.delete(candidateId as string)),
 						REBIND_OP_TIMEOUT_MS,
 						`Rollback delete for replacement "${candidateId}" did not settle within ${REBIND_OP_TIMEOUT_MS}ms.`,
 					);
 				}
 				catch (err) { errors.push(`candidate delete: ${describeThrown(err)}`); }
-				candidatePresence = await readRebindComponent(candidateId);
+				candidatePresence = await readPlaced(candidateId);
 				if (candidatePresence.present !== false) {
 					errors.push(`candidate removal unverified (present=${String(candidatePresence.present)}${candidatePresence.error ? `: ${candidatePresence.error}` : ''})`);
 				}
@@ -6932,7 +7059,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			if (inPlaceOk) {
 				try {
 					await withTimeout(
-						Promise.resolve(eda.lib_Device.modify(device.uuid, device.libraryUuid, undefined, undefined, rollbackAssoc)),
+						mutate(() => eda.lib_Device.modify(device.uuid, device.libraryUuid, undefined, undefined, rollbackAssoc)),
 						REBIND_OP_TIMEOUT_MS,
 						`Rollback of the original device association did not settle within ${REBIND_OP_TIMEOUT_MS}ms.`,
 					);
@@ -6954,7 +7081,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 					: { symbol: clonedDevice.previousRef };
 				try {
 					await withTimeout(
-						Promise.resolve(eda.lib_Device.modify(clonedDevice.uuid, clonedDevice.libraryUuid, undefined, undefined, previousAssoc)),
+						mutate(() => eda.lib_Device.modify(clonedDevice.uuid, clonedDevice.libraryUuid, undefined, undefined, previousAssoc)),
 						REBIND_OP_TIMEOUT_MS,
 						`Rollback of the reused clone association did not settle within ${REBIND_OP_TIMEOUT_MS}ms.`,
 					);
@@ -6969,9 +7096,16 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				catch (err) { reusedCloneRestored = false; errors.push(`reused clone rollback: ${describeThrown(err)}`); }
 			}
 
-			let oldPresence = await readRebindComponent(primitiveId);
+			let oldPresence = await readPlaced(primitiveId);
 			let restoredOriginalId: string | undefined;
 			let restoredOriginalVerified = oldPresence.present === true;
+			if (nativeInstanceDomain && oldPresence.present === true && oldPresence.component) {
+				try {
+					await verifyPlacedBinding(oldPresence.component, device, oldRef, 'rollback-original');
+					const differences = rebindInstanceDifferences(snapshot, serializeComponent(oldPresence.component));
+					if (differences.length) throw new Error(`original instance differs: ${differences.join(', ')}`);
+				} catch (err) { restoredOriginalVerified = false; errors.push(`original instance verification: ${describeThrown(err)}`); }
+			}
 			if (oldPresence.present === false && deviceAssociationRestored) {
 				try {
 					const restored = await createPlaced(device, 'rollback-original', id => { restoredOriginalId = id; });
@@ -6988,7 +7122,7 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 			if (clonedDevice?.owned) {
 				try {
 					await withTimeout(
-						Promise.resolve(eda.lib_Device.delete(clonedDevice.uuid, clonedDevice.libraryUuid)),
+						mutate(() => eda.lib_Device.delete(clonedDevice.uuid, clonedDevice.libraryUuid)),
 						REBIND_OP_TIMEOUT_MS,
 						`Rollback delete for owned clone "${clonedDevice.uuid}" did not settle within ${REBIND_OP_TIMEOUT_MS}ms.`,
 					);
@@ -7003,9 +7137,9 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				catch (err) { errors.push(`owned clone rollback: ${describeThrown(err)}`); }
 			}
 
-			oldPresence = await readRebindComponent(primitiveId);
+			oldPresence = await readPlaced(primitiveId);
 			const rollbackVerified = candidatePresence.present === false
-				&& (oldPresence.present === true || restoredOriginalVerified)
+				&& restoredOriginalVerified
 				&& deviceAssociationRestored && reusedCloneRestored && ownedCloneRemoved && errors.length === 0;
 			return {
 				attempted: true,
@@ -7023,8 +7157,8 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 		const failWithRollback = async (err: unknown): Promise<never> => {
 			const failedPhase = phase;
 			const rollbackFacts = await rollback();
-			const oldNow = await readRebindComponent(primitiveId);
-			const candidateNow = candidateId ? await readRebindComponent(candidateId) : { present: candidateMayLandLate ? null : false };
+			const oldNow = await readPlaced(primitiveId);
+			const candidateNow = candidateId ? await readPlaced(candidateId) : { present: candidateMayLandLate ? null : false };
 			const facts = {
 				phase: failedPhase,
 				oldPrimitive: { primitiveId, present: oldNow.present, ...(oldNow.error ? { error: oldNow.error } : {}) },
@@ -7052,15 +7186,32 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 		}
 		candidateId = candidate.getState_PrimitiveId();
 		rlog(`candidate verified ${candidateId}`);
+		if (nativeInstanceDomain) {
+			phase = 'candidate-binding-readback';
+			try {
+				await assertRebindContext();
+				const observed = serializeComponent(candidate);
+				const inventory = await loadNativeFootprintInventory(identityContext);
+				if (inventory.error) throw new Error(inventory.error);
+				const native = readNativeFootprintSource(inventory.entries, readDeviceFootprint(observed).uuid);
+				const association = await readAssociation(effectiveDevice);
+				if (!native.source || !sameDeviceRef(native.source, target)
+					|| identityRecord(observed.device).libraryUuid !== effectiveDevice.libraryUuid
+					|| !sameDeviceRef(association.ref, target)) {
+					throw new Error(`Candidate native source or library binding differs from the requested target: ${native.error ?? association.error ?? 'identity mismatch'}`);
+				}
+				await assertRebindContext();
+			} catch (err) { return failWithRollback(err); }
+		}
 
 		phase = 'delete-original';
 		try {
 			await withTimeout(
-				Promise.resolve(eda.sch_PrimitiveComponent.delete(primitiveId)),
+				mutate(() => eda.sch_PrimitiveComponent.delete(primitiveId)),
 				REBIND_OP_TIMEOUT_MS,
 				`Original-instance delete did not settle within ${REBIND_OP_TIMEOUT_MS}ms. It may have applied; do not retry until fresh readback.`,
 			);
-			const oldAfterDelete = await readRebindComponent(primitiveId);
+			const oldAfterDelete = await readPlaced(primitiveId);
 			if (oldAfterDelete.present !== false) {
 				throw new ActionError(
 					ErrorCodes.EDA_CALL_FAILED,
@@ -7094,6 +7245,8 @@ function makeRebindHandler(kind: 'footprint' | 'symbol'): Handler {
 				primitiveId: created.getState_PrimitiveId(),
 				previousPrimitiveId: primitiveId,
 				rebound: kind,
+				verified: true,
+				...(nativeInstanceDomain ? { originalPlacedReference: oldPlacedRef, originalLibraryReference: oldRef } : {}),
 				mode: clonedDevice ? 'cloned-to-personal-library' : 'in-place',
 				device: { uuid: effectiveDevice.uuid, libraryUuid: effectiveDevice.libraryUuid },
 				...(clonedDevice ? {
@@ -7228,18 +7381,24 @@ const identityRecord = (value: unknown): Record<string, unknown> =>
 const identityText = (value: unknown): string => typeof value === 'string' ? value : '';
 const instanceIdentityUuid = (value: unknown): boolean => /^[0-9a-f]{16}$/i.test(identityText(value));
 const libraryIdentityUuid = (value: unknown): boolean => /^[0-9a-f]{32}$/i.test(identityText(value));
-const stableIdentityName = (value: unknown): string => {
-	const name = identityText(value);
-	return name && !name.startsWith('=') ? name : '';
-};
-
-interface NativeFootprintInventory { entries?: unknown; error?: string }
+interface NativeFootprintInventory { entries?: unknown; deviceEntries?: NativeDeviceSourceEntry[]; error?: string }
+type PlacedIdentityContext = Awaited<ReturnType<typeof readResponseContext>>;
+async function assertPlacedIdentityContext(expected: PlacedIdentityContext): Promise<void> {
+	const current = await readResponseContext();
+	if (!expected.projectUuid || !expected.documentUuid
+		|| current.projectUuid !== expected.projectUuid || current.documentUuid !== expected.documentUuid
+		|| (expected.documentType && current.documentType !== expected.documentType)
+		|| (expected.tabId && current.tabId !== expected.tabId)) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'project/document context changed or unavailable during placed-device identity proof; no mutation is permitted in another context');
+	}
+}
 async function loadNativeFootprintInventory(expectedContext?: { projectUuid?: string; documentUuid?: string }): Promise<NativeFootprintInventory> {
 	try {
 		const before = await readResponseContext();
 		if (!before.projectUuid || !before.documentUuid) return { error: 'native footprint source requires a known current project and document' };
 		if (expectedContext && (before.projectUuid !== expectedContext.projectUuid || before.documentUuid !== expectedContext.documentUuid)) return { error: 'project/document changed since the component identity snapshot' };
 		let entries: unknown;
+		let deviceEntries: NativeDeviceSourceEntry[] | undefined;
 		let documentError = '';
 		try {
 			entries = await withTimeout(eda.sys_FileManager.getDocumentFootprintSources(), 7000, 'identity getDocumentFootprintSources timed out after 7000ms');
@@ -7250,12 +7409,14 @@ async function loadNativeFootprintInventory(expectedContext?: { projectUuid?: st
 			if (typeof eda.sys_FileManager?.getProjectFile !== 'function') return { error: `official footprint source inventory unavailable; project export unavailable${documentError ? ` (${documentError})` : ''}` };
 			const archive = await withTimeout(eda.sys_FileManager.getProjectFile('easyeda-agent-identity.epro2', undefined, 'epro2'), 10000, 'identity getProjectFile timed out after 10000ms');
 			if (!archive) return { error: 'official project export did not return a source archive' };
-			entries = await withTimeout(readProjectFootprintSourceArchive(archive, before.documentUuid), 7000, 'identity source archive decoding timed out after 7000ms');
+			const sourceText = await withTimeout(readProjectNativeSourceArchive(archive), 7000, 'identity source archive decoding timed out after 7000ms');
+			entries = projectFootprintSourceInventory(sourceText, before.documentUuid);
+			deviceEntries = projectDeviceSourceInventory(sourceText, before.documentUuid);
 		}
 		if (!Array.isArray(entries) || entries.length > 2048) return { error: 'official footprint source inventory is incomplete or exceeds 2048 entries' };
 		const after = await readResponseContext();
 		if (after.projectUuid !== before.projectUuid || after.documentUuid !== before.documentUuid) return { error: 'project/document changed while reading native footprint source' };
-		return { entries };
+		return { entries, ...(deviceEntries ? { deviceEntries } : {}) };
 	} catch (err) {
 		return { error: `official footprint source query failed: ${describeThrown(err)}` };
 	}
@@ -7265,96 +7426,41 @@ async function loadNativeFootprintInventory(expectedContext?: { projectUuid?: st
  * EasyEDA can expose 16-hex project instance refs for BOTH device and footprint.
  * They cannot equal the 32-hex library refs. This narrow recovery is deliberately
  * separate from footprintMatchesInstance, whose asset-UUID comparisons stay strict.
- * Native DOCHEAD/META.source supplies the actual 16→32 footprint origin. A full
- * LCSC candidate set and official get() association must identify that exact
- * source asset. Matching package names without native source is insufficient
+ * Native DOCHEAD/META.source supplies actual 16→32 DEVICE/FOOTPRINT origins.
+ * When DEVICE origin is available, one exact official get() proves both assets;
+ * otherwise the full LCSC/scoped candidate set must prove the footprint source.
+ * Matching package names without native source is insufficient
  * for reconstruction and never hydrates a replayable device identity.
  */
 async function resolveInstanceFootprintDevice(
 	snapshot: Record<string, unknown>,
 	getNativeFootprints: () => Promise<NativeFootprintInventory>,
+	expectedContext: PlacedIdentityContext,
 ): Promise<DeviceResolution> {
 	const instanceFp = readDeviceFootprint(snapshot);
-	const supplierId = identityText(snapshot.supplierId);
-	const mpn = identityText(snapshot.manufacturerId);
-	const sourceName = stableIdentityName(identityRecord(snapshot.component).name)
-		|| stableIdentityName(snapshot.name) || stableIdentityName(identityRecord(snapshot.device).name);
 	const context = `instance footprint uuid=${JSON.stringify(instanceFp.uuid)}, libraryUuid=${JSON.stringify(instanceFp.libraryUuid)}`;
 	const failure = (reason: string, candidates: Array<LcscCandidate> = []): DeviceResolution => ({
 		reason: `${reason}; ${context}; instance/library UUID domains require native META.source plus exact LCSC/model and official asset-library evidence`,
 		...(candidates.length ? { candidates: candidates.slice(0, 5) } : {}),
 	});
-	if (!/^C\d+$/.test(supplierId) || !instanceFp.libraryUuid || (!mpn && !sourceName)) {
-		return failure('incomplete identity evidence for 16-hex instance footprint');
-	}
+	try { await assertPlacedIdentityContext(expectedContext); }
+	catch (err) { return failure(describeThrown(err)); }
 	const inventory = await getNativeFootprints();
 	if (inventory.error) return failure(inventory.error);
 	const native = readNativeFootprintSource(inventory.entries, instanceFp.uuid);
 	if (!native.source) return failure(native.error ?? 'native footprint source is missing; name-only evidence cannot establish reconstruction identity');
 	if (native.source.libraryUuid !== instanceFp.libraryUuid) return failure('native footprint source library conflicts with the placed footprint provenance');
-	let raw: Array<Record<string, unknown>>;
-	try {
-		// Without allowMultiMatch=true the API may hide an equally valid device.
-		const queried = await withTimeout(eda.lib_Device.getByLcscIds([supplierId], undefined, true), 7000, `identity getByLcscIds ${supplierId} timed out after 7000ms`);
-		if (!Array.isArray(queried)) return failure('complete LCSC candidate inventory unavailable');
-		raw = queried as unknown as Array<Record<string, unknown>>;
-	} catch (err) {
-		return failure(`complete LCSC candidate query failed: ${describeThrown(err)}`);
-	}
-	const candidates = raw.map(asCandidate);
-	const matches = new Map<string, Record<string, unknown>>();
-	const unresolvedEvidence: Array<string> = [];
-	for (const hit of raw) {
-		const searchProperties = identityRecord(hit.otherProperty);
-		const searchLcsc = identityText(hit.supplierId ?? searchProperties['Supplier Part']);
-		const searchMpn = identityText(hit.manufacturerId ?? searchProperties['Manufacturer Part']);
-		const searchName = stableIdentityName(hit.name);
-		// A known different model is not an ambiguity. Missing/conflicting detail
-		// evidence for a plausible candidate must never be discarded to pick a first hit.
-		if (searchLcsc && searchLcsc !== supplierId) continue;
-		if (mpn ? searchMpn && searchMpn !== mpn : searchName && searchName !== sourceName) continue;
-		const searchFp = readDeviceFootprint(hit);
-		if (!libraryIdentityUuid(hit.uuid) || !identityText(hit.libraryUuid) || !libraryIdentityUuid(searchFp.uuid)) {
-			unresolvedEvidence.push('candidate lacks a library device/footprint identity');
-			continue;
-		}
-		let detail: Record<string, unknown>;
-		try {
-			detail = identityRecord(await withTimeout(eda.lib_Device.get(hit.uuid as string, hit.libraryUuid as string), 7000, `identity device.get ${hit.uuid} timed out after 7000ms`));
-		} catch (err) {
-			unresolvedEvidence.push(`device.get ${hit.uuid} failed: ${describeThrown(err)}`);
-			continue;
-		}
-		const property = identityRecord(detail.property);
-		const associationFp = readDeviceFootprint({ association: detail.association });
-		if (detail.uuid !== hit.uuid || detail.libraryUuid !== hit.libraryUuid
-			|| !libraryIdentityUuid(associationFp.uuid) || !associationFp.libraryUuid
-			|| associationFp.uuid !== searchFp.uuid
-			|| (searchFp.libraryUuid && searchFp.libraryUuid !== associationFp.libraryUuid)) {
-			unresolvedEvidence.push(`device.get ${hit.uuid} identity/footprint association is missing or conflicts with the search candidate`);
-			continue;
-		}
-		if (property.supplierId !== supplierId || (mpn
-			? property.manufacturerId !== mpn
-			: (stableIdentityName(detail.name) !== sourceName && stableIdentityName(property.name) !== sourceName))) {
-			unresolvedEvidence.push(`device.get ${hit.uuid} lacks matching exact LCSC and model/name evidence`);
-			continue;
-		}
-		if (associationFp.uuid !== native.source.uuid || associationFp.libraryUuid !== native.source.libraryUuid) continue;
-		const proven = { ...hit, footprint: { ...searchFp, libraryUuid: associationFp.libraryUuid } };
-		matches.set(JSON.stringify([hit.libraryUuid, hit.uuid]), proven);
-	}
-	if (unresolvedEvidence.length) return failure(unresolvedEvidence.join('; '), candidates);
-	if (matches.size !== 1) return failure(matches.size
-		? `${matches.size} distinct devices match exact LCSC/model and native footprint source — ambiguous`
-		: 'no device matches exact LCSC/model and native footprint source (package-variant mismatch)', candidates);
-	const hit = [...matches.values()][0];
-	return {
-		device: { uuid: hit.uuid as string, libraryUuid: hit.libraryUuid as string, via: 'lcsc-footprint-source' },
-		lcsc: supplierId,
-		deviceFootprint: readDeviceFootprint(hit).name,
-		footprintSource: native.source,
-	};
+	const deviceOrigin = inventory.deviceEntries
+		? readNativeDeviceSource(inventory.deviceEntries, identityText(identityRecord(snapshot.device).uuid)) : {};
+	if (deviceOrigin.error) return failure(deviceOrigin.error);
+	const proof = await proveNativePlacedDevice(snapshot, native.source, {
+		assertContext: () => assertPlacedIdentityContext(expectedContext),
+		byLcsc: id => withTimeout(eda.lib_Device.getByLcscIds([id], undefined, true), 7000, `identity getByLcscIds ${id} timed out after 7000ms`),
+		search: (query, library) => withTimeout(eda.lib_Device.search(query, library), 7000, `identity scoped search ${query} timed out after 7000ms`),
+		get: (uuid, library) => withTimeout(eda.lib_Device.get(uuid, library), 7000, `identity device.get ${uuid} timed out after 7000ms`),
+	}, deviceOrigin.source);
+	if (!proof.device) return failure(proof.reason ?? 'native placed device proof failed', (proof.candidates ?? []).map(asCandidate));
+	return { device: proof.device, lcsc: proof.lcsc, deviceFootprint: proof.deviceFootprint, footprintSource: proof.footprintSource };
 }
 
 /**
@@ -7377,10 +7483,12 @@ async function resolveInstanceFootprintDevice(
 async function resolvePlacedDevice(
 	snapshot: Record<string, unknown>,
 	getNativeFootprints: () => Promise<NativeFootprintInventory> = loadNativeFootprintInventory,
+	expectedContext?: PlacedIdentityContext,
 ): Promise<DeviceResolution> {
 	const instanceFp = readDeviceFootprint(snapshot);
-	if (instanceIdentityUuid(identityRecord(snapshot.device).uuid) && instanceIdentityUuid(instanceFp.uuid)) {
-		return resolveInstanceFootprintDevice(snapshot, getNativeFootprints);
+	if ((instanceIdentityUuid(identityRecord(snapshot.device).uuid) || libraryIdentityUuid(identityRecord(snapshot.device).uuid))
+		&& instanceIdentityUuid(instanceFp.uuid)) {
+		return resolveInstanceFootprintDevice(snapshot, getNativeFootprints, expectedContext ?? await readResponseContext());
 	}
 	const fpIdentity = instanceFp.name || instanceFp.uuid || instanceFp.libraryUuid;
 	const finish = (hits: Array<Record<string, unknown>>, via: string): DeviceResolution | undefined => {
@@ -7438,9 +7546,10 @@ async function resolvePlacedDevice(
 
 async function resolvePlacedDeviceIdentity(
 	snapshot: Record<string, unknown>,
-): Promise<DeviceRef & { via: string }> {
-	const res = await resolvePlacedDevice(snapshot);
-	if (res.device) return res.device;
+	expectedContext?: PlacedIdentityContext,
+): Promise<DeviceRef & { via: string; footprintSource?: NativePlacedFootprintSource }> {
+	const res = await resolvePlacedDevice(snapshot, () => loadNativeFootprintInventory(expectedContext), expectedContext);
+	if (res.device) return { ...res.device, ...(res.footprintSource ? { footprintSource: res.footprintSource } : {}) };
 	throw new ActionError(
 		ErrorCodes.INVALID_STATE,
 		`Cannot resolve the placed component's 32-char device-library uuid (${res.reason ?? 'no match'}) — `
@@ -7582,14 +7691,27 @@ const schematicComponentReplace: Handler = async (payload) => {
 		);
 	}
 
+	const identityContext = await readResponseContext();
 	const component = await getComponentOrThrow(primitiveId);
 	const snapshot = serializeComponent(component);
+	const nativeInstanceDomain = instanceIdentityUuid(readDeviceFootprint(snapshot).uuid);
+	const assertReplaceContext = async (): Promise<void> => {
+		if (nativeInstanceDomain) await assertPlacedIdentityContext(identityContext);
+	};
+	const readReplacePresence = async (id: string): Promise<RebindPresence> => {
+		try {
+			await assertReplaceContext();
+			const observed = await readRebindComponent(id);
+			await assertReplaceContext();
+			return observed;
+		} catch (err) { return { present: null, error: describeThrown(err) }; }
+	};
 	const oldName = typeof snapshot.name === 'string' ? snapshot.name : undefined;
 	// Resolve the OLD device's REAL 32-char library identity up front — it is the
 	// rollback target AND the same-device guard; getState_Component() only carries
 	// a 16-char placed-symbol id, so an unresolvable identity aborts here, before
 	// any canvas change.
-	const oldDevice = await resolvePlacedDeviceIdentity(snapshot);
+	const oldDevice = await resolvePlacedDeviceIdentity(snapshot, identityContext);
 	const oldPins = await readPinSnapshots(primitiveId);
 
 	// Resolve the NEW device identity.
@@ -7682,42 +7804,122 @@ const schematicComponentReplace: Handler = async (payload) => {
 			: {}),
 	};
 
-	const place = async (dev: DeviceRef, props: Record<string, unknown>): Promise<SchComponent | undefined> => {
+	const place = async (dev: DeviceRef, props: Record<string, unknown>, onCreated?: (id: string) => void): Promise<SchComponent | undefined> => {
+		await assertReplaceContext();
 		let c = await eda.sch_PrimitiveComponent.create(
 			{ libraryUuid: dev.libraryUuid, uuid: dev.uuid },
 			x, y, undefined, rotation, mirror, addIntoBom, addIntoPcb,
 		);
+		if (c) onCreated?.(c.getState_PrimitiveId());
+		await assertReplaceContext();
 		if (c && Object.keys(props).length) {
 			// Prefer modify's returned primitive: serializing the create-time object
 			// echoes PRE-restore state (live-verified: designator read back "C?"
 			// while the canvas already showed the restored value).
 			try {
+				await assertReplaceContext();
 				const m = await eda.sch_PrimitiveComponent.modify(c.getState_PrimitiveId(), props);
 				if (m) c = m;
+				await assertReplaceContext();
 			}
-			catch { /* best-effort restore */ }
+			catch (err) { if (nativeInstanceDomain) throw err; }
 		}
 		// #157: carry the device's real LCSC C-number onto the instance.
-		if (c) c = (await backfillSupplierId(c, dev)).component;
+		if (c && !nativeInstanceDomain) c = (await backfillSupplierId(c, dev)).component;
+		if (c && nativeInstanceDomain && !/^C\d+$/.test(identityText(c.getState_SupplierId()))) {
+			await assertReplaceContext();
+			const detail = await withTimeout(eda.lib_Device.get(dev.uuid, dev.libraryUuid), REBIND_OP_TIMEOUT_MS, 'Replacement supplier detail timed out.');
+			await assertReplaceContext();
+			const supplierId = identityText(detail?.property?.supplierId);
+			if (detail?.uuid !== dev.uuid || detail.libraryUuid !== dev.libraryUuid) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Replacement supplier detail returned a different device.');
+			if (/^C\d+$/.test(supplierId)) {
+				const modified = await eda.sch_PrimitiveComponent.modify(c.getState_PrimitiveId(), { supplierId });
+				await assertReplaceContext();
+				if (modified) c = modified;
+			}
+		}
+		if (c && nativeInstanceDomain) {
+			await assertReplaceContext();
+			const fresh = await readRebindComponent(c.getState_PrimitiveId());
+			await assertReplaceContext();
+			if (fresh.present !== true || !fresh.component) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Replacement instance was not proven present by fresh readback.', fresh.error);
+			const observed = serializeComponent(fresh.component);
+			const identity = await resolvePlacedDeviceIdentity(observed, identityContext);
+			if (!sameDeviceRef(identity, dev)) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Replacement or rollback-original resolved to a different library device.');
+			for (const [key, value] of Object.entries(props)) {
+				if (exactJSON(observed[key]) !== exactJSON(value)) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, `Replacement or rollback-original property ${key} was not restored.`);
+			}
+			for (const key of ['x', 'y', 'rotation', 'mirror', 'addIntoBom', 'addIntoPcb']) {
+				if (exactJSON(observed[key]) !== exactJSON(snapshot[key])) throw new ActionError(ErrorCodes.EDA_CALL_FAILED, `Replacement or rollback-original pose ${key} differs from the original.`);
+			}
+			c = fresh.component;
+		}
 		return c ?? undefined;
 	};
 
+	let attemptedCandidateId: string | undefined;
+	let restoredOriginalId: string | undefined;
+	const failNativeReplace = async (err: unknown, phase: string, rollback: Record<string, unknown>): Promise<never> => {
+		const original = await readReplacePresence(primitiveId);
+		const replacement = attemptedCandidateId ? await readReplacePresence(attemptedCandidateId) : { present: null };
+		throw new ActionError(ErrorCodes.EDA_CALL_FAILED,
+			`Schematic replacement failed during phase "${phase}". Read the original document and reconcile the reported instances before retrying.`,
+			`replace transaction facts: ${JSON.stringify({
+				phase, cause: describeThrown(err),
+				oldPrimitive: { primitiveId, present: original.present, ...(original.error ? { error: original.error } : {}) },
+				replacement: { primitiveId: attemptedCandidateId ?? null, present: replacement.present, ...(replacement.error ? { error: replacement.error } : {}) },
+				rollback,
+			})}`);
+	};
+
 	// Step 3: delete the old instance.
+	let oldDeleteReturned = false;
 	try {
+		await assertReplaceContext();
 		await eda.sch_PrimitiveComponent.delete(primitiveId);
+		oldDeleteReturned = true;
+		await assertReplaceContext();
+		if (nativeInstanceDomain && (await readReplacePresence(primitiveId)).present !== false) {
+			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Original instance was not proven absent after replacement delete.');
+		}
 	}
 	catch (err) {
-		throw edaError(err, `Failed to delete the old instance "${primitiveId}" (canvas unchanged).`);
+		if (nativeInstanceDomain) return failNativeReplace(err, 'original-delete', { attempted: false, verified: false, oldDeleteReturned });
+		throw edaError(err, oldDeleteReturned
+			? `Old-instance delete returned but could not be verified in the original document; no further mutation was performed. Read the original document before retrying.`
+			: `Failed to delete the old instance "${primitiveId}"; mutation outcome is unverified.`);
 	}
 
 	// Step 4 + 5: place the new device and carry identity over.
 	let created: SchComponent | undefined;
 	let placeError: unknown;
 	try {
-		created = await place({ libraryUuid: target.libraryUuid, uuid: target.uuid }, carryProps);
+		created = await place({ libraryUuid: target.libraryUuid, uuid: target.uuid }, carryProps, id => { attemptedCandidateId = id; });
 	}
 	catch (err) { placeError = err; }
 	if (!created) {
+		if (nativeInstanceDomain) {
+			// Never clean up or restore on a different document after drift.
+			try { await assertReplaceContext(); }
+			catch (err) { return failNativeReplace(placeError ?? err, 'replacement-readback', { attempted: false, verified: false, contextUnavailable: true, errors: [describeThrown(err)] }); }
+			if (!attemptedCandidateId) return failNativeReplace(placeError ?? 'Replacement create returned no identifiable primitive.', 'replacement-create', {
+				attempted: false, verified: false, errors: ['Replacement absence could not be proven without a returned primitiveId; rollback was not attempted.'],
+			});
+			try {
+				await eda.sch_PrimitiveComponent.delete(attemptedCandidateId);
+				await assertReplaceContext();
+				if ((await readReplacePresence(attemptedCandidateId)).present !== false) throw new Error('Replacement removal could not be proven; rollback was not attempted.');
+			}
+			catch (err) { return failNativeReplace(placeError ?? err, 'replacement-cleanup', { attempted: false, verified: false, errors: [describeThrown(err)] }); }
+			let restored = false;
+			const rollbackErrors: string[] = [];
+			try { restored = Boolean(await place(oldDevice, rollbackProps, id => { restoredOriginalId = id; })); }
+			catch (err) { rollbackErrors.push(describeThrown(err)); }
+			return failNativeReplace(placeError ?? 'Replacement create returned no primitive.', 'replacement-restore', {
+				attempted: true, verified: restored, errors: rollbackErrors,
+				...(restoredOriginalId ? { restoredOriginal: { primitiveId: restoredOriginalId, verified: restored } } : {}),
+			});
+		}
 		// Roll back: re-create the ORIGINAL device with its full state.
 		let restored = false;
 		try { restored = Boolean(await place(oldDevice, rollbackProps)); }

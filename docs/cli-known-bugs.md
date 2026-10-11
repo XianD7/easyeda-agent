@@ -4,6 +4,18 @@
 此前基础 CLI 集中检查已收尾；日常可用范围和新发布验收进度见 [CLI Status](cli-STATUS.md)，本页维护问题细节。
 各轮现场依据见[历史证据索引](reviews/README.md)及对应 issue。
 
+## 封装构建与重新绑定
+
+本地 dev.9 候选补齐 `library.footprint.build` 的逐侧阻焊/钢网扩展字段，保留零值；
+普通 SDK `get()` 将开窗舍入到 0.1 mil，逐 pad 改用公开 `toAsync()` / `reset()` 精确回读，
+明确保存后再次核对。无法独立证明规则策略时拒绝 `null`，无数值约束的空对象也拒绝。CLI/Apply 对 `verified` 缺失、false 或 `partial:true`
+强制停止，保留响应，不允许 retry、verify 或 continue 掩盖写入失败。
+
+原理图重新绑定时区分实例 UUID 与库资产 UUID；原生 DEVICE 的来源记录可精确锁定库器件，
+再用 Device.get 校验型号、供应商料号及原生 FOOTPRINT 来源关联，避免搜索影子候选干扰身份。
+没有 DEVICE 来源时，稀疏搜索结果须经 Device.get 补齐，结合原库限定搜索和同文档原生来源证明身份。冲突、缺证或上下文漂移时拒绝写入；
+回退也需验证原库身份。自动测试与现场保存重载分别记录，不能由工具成功推断制造资格。
+
 ## 当前跟踪
 
 | Bug | 影响判断 | 当前使用方式 |

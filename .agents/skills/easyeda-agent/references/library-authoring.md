@@ -36,6 +36,14 @@
   `number/name/x/y` 必填。
 - `footprint.geometry` 直接传给 `library.footprint.build`：每个 pad 的 `number/layer/x/y/shape`
   必填，`shape` 为官方 pad tuple；图形线为 `lines[]`。
+- pad 可声明 `solderMaskAndPasteMaskExpansion`，仅支持官方 `topSolderMask`、
+  `bottomSolderMask`、`topPasteMask`、`bottomPasteMask` 四个有限数值字段，单位 mil、每侧扩展；
+  `0` 表示零扩展，省略表示不指定。当前公开 SDK 无法独立回读规则策略，因此拒绝 `null`。
+  按焊盘类型及所在面使用支持的字段，
+  不把通孔焊盘的钢网字段当作有效开窗。示例：`{"topSolderMask":2,"topPasteMask":0}`。
+  普通 `get()` 会把开窗舍入到 0.1 mil；逐 pad 新鲜读取后用公开 `toAsync()` / `reset()`
+  恢复精确值并验证请求字段，明确保存后再次验证；字段丢失或 save 未返回布尔 true
+  时停止并保留 partial/rollback 证据。`apertureVerifiedPads` 只计明确指定并回读通过的焊盘。
 - `library.symbol.build` 与 `library.footprint.build` 只写入刚创建且可证明为空的目标资产。
   Connector 打开编辑器后、创建任何图元前读取目标图元 inventory；发现已有几何或无法完整读取
   inventory 时以 `PRECONDITION_REFUSED` 零写入拒绝。不要对同一 UUID 重放 build；当前不提供

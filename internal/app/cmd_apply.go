@@ -941,6 +941,10 @@ func (r *applyRunner) execute() error {
 		if errors.As(execErr, &silkSetErr) {
 			failure.RawResponse = silkSetErr.rawResponse
 		}
+		var libraryErr *unverifiedLibraryWriteError
+		if errors.As(execErr, &libraryErr) {
+			failure.RawResponse = libraryErr.rawResponse
+		}
 		r.writeJournal(failure)
 		_, _, contOnErr := r.policy(s)
 		onFail := s.OnFail
@@ -952,6 +956,9 @@ func (r *applyRunner) execute() error {
 			}
 		}
 		fmt.Fprintf(r.stderr, "\n✗ step [%d/%d] %s failed: %v\n", i+1, len(r.pb.Steps), ref, execErr)
+		if libraryErr != nil {
+			return fmt.Errorf("playbook stopped at step %s: %w", ref, execErr)
+		}
 		if silkSetErr != nil {
 			return fmt.Errorf("playbook stopped at step %s: %w", ref, execErr)
 		}
@@ -1018,6 +1025,10 @@ func (r *applyRunner) executeStep(s *playbookStep, catalog map[string]protocol.A
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		result, err := r.executeOnce(s, timeout)
+		var libraryErr *unverifiedLibraryWriteError
+		if errors.As(err, &libraryErr) {
+			return nil, err
+		}
 		var silkSetErr *unverifiedSilkSetError
 		if errors.As(err, &silkSetErr) {
 			return nil, err // Generic verify/retry must not hide or replay an unverified write.
@@ -1137,18 +1148,19 @@ func substPayloadVars(payload map[string]any, literalKeys []string, vars map[str
 func (r *applyRunner) runAction(action string, payload map[string]any, timeout time.Duration) (any, error) {
 	respBody, err := postAction(r.cfg, action, r.window, payload, timeout)
 	if err != nil {
-		return nil, err
+		return nil, libraryWriteFailureError(action, respBody, err)
 	}
 	var parsed struct {
 		OK     bool           `json:"ok"`
 		Result map[string]any `json:"result"`
 		Error  *struct {
+			Code    string `json:"code"`
 			Message string `json:"message"`
 			Detail  string `json:"detail"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("decode %s response: %w", action, err)
+		return nil, libraryWriteFailureError(action, respBody, fmt.Errorf("decode %s response: %w", action, err))
 	}
 	if !parsed.OK {
 		msg := "ok=false"
@@ -1157,6 +1169,13 @@ func (r *applyRunner) runAction(action string, payload map[string]any, timeout t
 			if parsed.Error.Detail != "" {
 				msg += " — " + parsed.Error.Detail
 			}
+		}
+		if isVerifiedLibraryWrite(action) {
+			code := ""
+			if parsed.Error != nil {
+				code = parsed.Error.Code
+			}
+			return anyResult(parsed.Result), libraryWriteFailureError(action, respBody, &actionError{Action: action, Code: code, Message: msg})
 		}
 		return nil, fmt.Errorf("%s: %s", action, msg)
 	}
@@ -1173,6 +1192,9 @@ func (r *applyRunner) runAction(action string, payload map[string]any, timeout t
 		if r.stdout != nil {
 			fmt.Fprintln(r.stdout, string(respBody))
 		}
+		return anyResult(parsed.Result), err
+	}
+	if err := libraryWriteResultError(action, parsed.Result, respBody); err != nil {
 		return anyResult(parsed.Result), err
 	}
 	if err := pourBoundaryError(action, parsed.Result); err != nil {
@@ -1239,6 +1261,10 @@ func (r *applyRunner) runSubcommand(run string, flags map[string]any, args []str
 		}
 	}
 	if code != 0 {
+		var libraryErr *unverifiedLibraryWriteError
+		if errors.As(commandErr, &libraryErr) {
+			return parseTrailingJSON(out.String()), fmt.Errorf("run %q: %w", run, commandErr)
+		}
 		var silkSetErr *unverifiedSilkSetError
 		if errors.As(commandErr, &silkSetErr) {
 			return parseTrailingJSON(out.String()), fmt.Errorf("run %q: %w", run, commandErr)

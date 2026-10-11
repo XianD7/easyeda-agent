@@ -105,7 +105,7 @@ func dispatch(cfg *appConfig, action, window string, payload any, stdout, stderr
 func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout time.Duration, stdout, stderr io.Writer) error {
 	respBody, err := postAction(cfg, action, window, payload, timeout)
 	if err != nil {
-		return err
+		return libraryWriteFailureError(action, respBody, err)
 	}
 
 	_, _ = stdout.Write(respBody)
@@ -131,14 +131,17 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		if isVerifiedLibraryWrite(action) {
+			return libraryWriteFailureError(action, respBody, errors.Join(errActionFailed, fmt.Errorf("decode %s response: %w", action, err)))
+		}
 		return errActionFailed
 	}
 	if !parsed.OK {
 		if parsed.Error == nil {
-			return errActionFailed
+			return libraryWriteFailureError(action, respBody, errActionFailed)
 		}
-		return errors.Join(errActionFailed, &actionError{Action: action, Code: parsed.Error.Code,
-			Message: parsed.Error.Message, Detail: parsed.Error.Detail})
+		return libraryWriteFailureError(action, respBody, errors.Join(errActionFailed, &actionError{Action: action, Code: parsed.Error.Code,
+			Message: parsed.Error.Message, Detail: parsed.Error.Detail}))
 	}
 	if action == "pcb.silk.align" || action == "pcb.silk.set" {
 		var envelope struct {
@@ -151,6 +154,15 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 			return err
 		}
 		return silkAlignmentError(action, envelope.Result)
+	}
+	if isVerifiedLibraryWrite(action) {
+		var envelope struct {
+			Result map[string]any `json:"result"`
+		}
+		if err := json.Unmarshal(respBody, &envelope); err != nil {
+			return libraryWriteFailureError(action, respBody, errors.Join(errActionFailed, err))
+		}
+		return libraryWriteResultError(action, envelope.Result, respBody)
 	}
 	switch action {
 	case "pcb.import_changes":
@@ -413,6 +425,11 @@ func requestAction(cfg *appConfig, action, window string, payload any) (*actionR
 // requestActionTimed is requestAction with a caller-chosen round-trip timeout,
 // for heavy actions (DRC on a real board routinely exceeds the default).
 func requestActionTimed(cfg *appConfig, action, window string, payload any, timeout time.Duration) (*actionResult, error) {
+	if isVerifiedLibraryWrite(action) {
+		// Even a known precondition refusal is retained for explicit inspection;
+		// do not let an unwrapped actionError re-enable queue-blocked retries.
+		return requestActionOnce(cfg, action, window, payload, timeout)
+	}
 	// 连接器队列被上一条 handler 堵住 → daemon 拒绝派发并明说「动作未发出、
 	// 等它排空就行」。这里统一等(见 queue_blocked_retry.go):这是所有动作的
 	// 唯一底层出口,--doc guard 的 pages.list 也从这里走 —— 而恢复段正是被
@@ -434,7 +451,7 @@ var queueWaitProgress io.Writer = os.Stderr
 func requestActionOnce(cfg *appConfig, action, window string, payload any, timeout time.Duration) (*actionResult, error) {
 	respBody, err := postAction(cfg, action, window, payload, timeout)
 	if err != nil {
-		return nil, err
+		return nil, libraryWriteFailureError(action, respBody, err)
 	}
 
 	var parsed struct {
@@ -452,7 +469,7 @@ func requestActionOnce(cfg *appConfig, action, window string, payload any, timeo
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("decode %s response: %w", action, err)
+		return nil, libraryWriteFailureError(action, respBody, fmt.Errorf("decode %s response: %w", action, err))
 	}
 	res := &actionResult{ID: parsed.ID, Type: parsed.Type, Version: parsed.Version, OK: parsed.OK, Result: parsed.Result, Artifacts: parsed.Artifacts, Context: parsed.Context, Seq: parseSeqCounters(respBody)}
 	if !parsed.OK {
@@ -476,7 +493,10 @@ func requestActionOnce(cfg *appConfig, action, window string, payload any, timeo
 		// 结构化错误(actionError):文本与旧版逐字一致,额外带上 error.code,
 		// 于是调用方能把「机械门拦下的」(STALE_READ)和「真的读失败了」分开处理
 		// —— 两者的下一步完全不同。见 stale_read_optin.go。
-		return res, &actionError{Action: action, Code: code, Message: msg}
+		return res, libraryWriteFailureError(action, respBody, &actionError{Action: action, Code: code, Message: msg})
+	}
+	if err := libraryWriteResultError(action, res.Result, respBody); err != nil {
+		return res, err
 	}
 	if err := pourBoundaryError(action, res.Result); err != nil {
 		return res, err
@@ -522,7 +542,7 @@ func encodeResultEnvelope(res *actionResult, report any, stdout io.Writer) error
 func dispatchCapture(cfg *appConfig, action, window string, payload any, stdout io.Writer) (*actionResult, error) {
 	respBody, err := postAction(cfg, action, window, payload, defaultActionTimeout)
 	if err != nil {
-		return nil, err
+		return nil, libraryWriteFailureError(action, respBody, err)
 	}
 
 	_, _ = stdout.Write(respBody)
@@ -535,11 +555,28 @@ func dispatchCapture(cfg *appConfig, action, window string, payload any, stdout 
 		OK        bool           `json:"ok"`
 		Result    map[string]any `json:"result"`
 		Artifacts []artifactRef  `json:"artifacts"`
+		Error     *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Detail  string `json:"detail"`
+		} `json:"error"`
 	}
-	if err := json.Unmarshal(respBody, &parsed); err != nil || !parsed.OK {
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		if isVerifiedLibraryWrite(action) {
+			return nil, libraryWriteFailureError(action, respBody, errors.Join(errActionFailed, fmt.Errorf("decode %s response: %w", action, err)))
+		}
 		return nil, errActionFailed
 	}
+	if !parsed.OK {
+		if isVerifiedLibraryWrite(action) && parsed.Error != nil {
+			return nil, libraryWriteFailureError(action, respBody, errors.Join(errActionFailed, &actionError{Action: action, Code: parsed.Error.Code, Message: parsed.Error.Message, Detail: parsed.Error.Detail}))
+		}
+		return nil, libraryWriteFailureError(action, respBody, errActionFailed)
+	}
 	res := &actionResult{OK: parsed.OK, Result: parsed.Result, Artifacts: parsed.Artifacts}
+	if err := libraryWriteResultError(action, res.Result, respBody); err != nil {
+		return res, err
+	}
 	if err := silkAlignmentError(action, res.Result); err != nil {
 		return res, err
 	}
@@ -1111,6 +1148,9 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 		return nil, fmt.Errorf("read response: %w", readErr)
 	}
 	if closeErr != nil {
+		if isVerifiedLibraryWrite(action) {
+			return respBody, fmt.Errorf("close response: %w", closeErr)
+		}
 		return nil, fmt.Errorf("close response: %w", closeErr)
 	}
 	// Surface a daemon stale-read advisory here — the one choke point all

@@ -953,7 +953,7 @@ test('library footprint build opens the asset, creates pads/lines and verifies I
 				const id = `pad-${number}`; padIds.push(id);
 				return { getState_PrimitiveId: () => id };
 			},
-			get: async (ids: string[]) => ids.map(id => ({ id })),
+			get: async (ids: string[]) => ids.map(id => ({ getState_PrimitiveId: () => id })),
 			delete: async () => true,
 		},
 		pcb_MathPolygon: {
@@ -965,7 +965,7 @@ test('library footprint build opens the asset, creates pads/lines and verifies I
 				const id = `line-${lineIds.length + 1}`; lineIds.push(id);
 				return { getState_PrimitiveId: () => id };
 			},
-			get: async (ids: string[]) => ids.map(id => ({ id })),
+			get: async (ids: string[]) => ids.map(id => ({ getState_PrimitiveId: () => id })),
 			delete: async () => true,
 		},
 		pcb_Document: { save: async () => true },
@@ -999,7 +999,7 @@ test('library footprint build refuses a replay before creating duplicate geometr
 				const id = `pad-${number}-${padIds.length + 1}`; padIds.push(id);
 				return { getState_PrimitiveId: () => id };
 			},
-			get: async (ids: string[]) => ids.map(id => ({ id })),
+			get: async (ids: string[]) => ids.map(id => ({ getState_PrimitiveId: () => id })),
 			delete: async () => true,
 		},
 		pcb_MathPolygon: { createPolygon: (source: unknown) => ({ source }) },
@@ -1009,7 +1009,7 @@ test('library footprint build refuses a replay before creating duplicate geometr
 				const id = `line-${lineIds.length + 1}`; lineIds.push(id);
 				return { getState_PrimitiveId: () => id };
 			},
-			get: async (ids: string[]) => ids.map(id => ({ id })),
+			get: async (ids: string[]) => ids.map(id => ({ getState_PrimitiveId: () => id })),
 			delete: async () => true,
 		},
 		pcb_Document: { save: async () => { saves++; return true; } },
@@ -3813,7 +3813,7 @@ function instanceIdentityEda(): any {
 		lib_Device: {
 			getByLcscIds: async (...args: unknown[]) => { calls.push(['getByLcscIds', ...args]); return [hit]; },
 			get: async (...args: unknown[]) => { calls.push(['get', ...args]); return detail; },
-			search: async () => { throw new Error('must not replace an incomplete exact-LCSC inventory with a search'); },
+			search: async (...args: unknown[]) => { calls.push(['search', ...args]); return [hit]; },
 		},
 	};
 }
@@ -3839,6 +3839,7 @@ test('device identity: 16-hex project footprint resolves only with native source
 	assert.deepEqual(mock.calls, [
 		['getDocumentFootprintSources'],
 		['getByLcscIds', ['C6186'], undefined, true],
+		['search', 'AMS1117-3.3', identityLibrary],
 		['get', identityDevice, identityLibrary],
 	]);
 });

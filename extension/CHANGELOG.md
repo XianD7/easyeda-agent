@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.9.1-dev.9] - 2026-10-11
+
+- Resolve placed-device identity from the native DEVICE source before verifying the exact library association; reject empty aperture requests.
+
+## [1.9.1-dev.8] - 2026-10-11
+
+- Use public asynchronous pad reset for full-precision aperture verification; reject unobservable rule-based aperture policies before mutation.
+
+## [1.9.1-dev.7] - 2026-10-11
+
+- Footprint builds accept official per-side solder/paste mask expansion, preserve explicit zero, verify fresh primitive identities and apertures, and require boolean save success.
+- Schematic footprint rebinding resolves sparse library search results against native placed identities and a same-document source association before mutation.
+- CLI and Apply stop on unverified footprint builds/rebinds, retaining partial evidence without retry or dependent writes.
+- Local development candidate; this entry does not certify manufacturing or full design E2E.
+
 ## [1.9.1-dev.2] - 2026-10-04
 
 - Keep exact source comparison as the default; add an explicit `dochead-volatile-v1` probe rule for the observed Web 4.1.60 SCH_PAGE serialization header. Only client/updateTime/version value tokens may vary, with strict grammar and unchanged remaining bytes.
