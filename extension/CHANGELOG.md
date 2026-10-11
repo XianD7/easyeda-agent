@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.10.0] - 2026-10-11
+
+- 新增离线 `project drawings`：核验明确输入、图片有效性和哈希，保留官方图片原字节，生成图册、说明与 manifest。
+- 新增 `pcb layout render --actual` 正反面实际回读渲染，支持非零板框原点、底面镜像和已读取焊盘；缺测项明确披露，候选图与实际图分开标注。
+- PCB 采集记录工程/文档身份、时间、缺测与文件哈希，补丝印可见性和线宽状态；拒绝跨文档混用及坏图，不将相同图片字节直接判为旧采集。
+- `doc ready`、结构化 `doc reload --json` 和 `sch attribute-move` 纳入统一命令与回读流程；连接器更新后才能取得新增字段与动作。
+- 纳入 dev 已提交的库身份与焊盘开窗核对、公共库解析、实验性同源回写及原理图保留能力；已有限验收的范围和未完成设计回归分别记录。
+- 用户批准复用最近验证并按有限 CLI/工作流范围发布 v1.10.0；完整设计 E2E 延期，工程创建无 UUID、官方截图空白等限制继续保留，不代表电路、布局、布线或制造验收通过。
+
 ## [1.9.1-dev.9] - 2026-10-11
 
 - Resolve placed-device identity from the native DEVICE source before verifying the exact library association; reject empty aperture requests.
