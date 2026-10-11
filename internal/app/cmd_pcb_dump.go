@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -36,6 +35,9 @@ func newPcbDumpCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *co
 		Short: "Dump the board's read-only geometry to a self-contained JSON snapshot",
 		Long: "Capture components (anchor/rotation/locked/bbox/pads), board outline, silkscreen,\n" +
 			"live DRC rules and copper layer count in ONE file.\n\n" +
+			"With --out, a separate <out>.capture.json records the persisted file SHA256,\n" +
+			"byte count, capture identity/timing and missing observations. stdout mode\n" +
+			"continues to emit only the snapshot JSON.\n\n" +
 			"--include-copper also captures tracks/arcs, vias, pour boundaries, materialized\n" +
 			"poured copper, regions and static fills. Each category records available/unknown,\n" +
 			"so a failed read cannot be mistaken for an empty board.\n\n" +
@@ -76,7 +78,7 @@ func newPcbDumpCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *co
 				_, werr := stdout.Write(blob)
 				return werr
 			}
-			if err := os.WriteFile(outPath, blob, 0o644); err != nil {
+			if err := writeBoardSnapshotFile(outPath, blob); err != nil {
 				return fmt.Errorf("write snapshot: %w", err)
 			}
 			fmt.Fprintf(stderr, "✅ %d component(s), outline=%s → %s\n",
@@ -87,7 +89,7 @@ func newPcbDumpCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *co
 			return nil
 		},
 	}
-	c.Flags().StringVar(&outPath, "out", "", "write the snapshot to this file (default: stdout)")
+	c.Flags().StringVar(&outPath, "out", "", "write snapshot plus <out>.capture.json with persisted file SHA256 and capture provenance (default: stdout only)")
 	c.Flags().StringVar(&label, "label", "", "record this name as the snapshot's project label")
 	c.Flags().BoolVar(&noSilk, "no-silk", false, "skip silkscreen (drops the silk-consistency dimensions)")
 	c.Flags().BoolVar(&noRules, "no-rules", false, "skip live DRC rules (thresholds fall back to the JLCPCB baseline)")

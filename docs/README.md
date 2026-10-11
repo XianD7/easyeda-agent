@@ -15,6 +15,7 @@
 | 已知 CLI bug 与当前使用建议 | [cli-known-bugs.md](cli-known-bugs.md) | 影响、跟踪单、提示与暂停条件 |
 | 基础门禁通过后的高级 CLI 业务验收 | [cli-advanced-test.md](cli-advanced-test.md) | [A00–A06 前置条件与步骤](cli-advanced-test-detail.md) |
 | 让 Agent 设计或修复电路 | [SKILL.md](../.agents/skills/easyeda-agent/SKILL.md) | 该入口的任务路由与参考 |
+| 交付清晰原理图和 PCB 正反面 | [设计图交付](../.agents/skills/easyeda-agent/references/design-drawings.md) | 实际回读图、官方图、离线图册与验证范围 |
 | 找到可改参数的相近案例 | [样例索引](../.agents/skills/easyeda-agent/references/examples/index.md) | 具体样例的来源、参数及回读 |
 | 确认能做什么、不能做什么 | [FEATURES.md](FEATURES.md) | [cli/README.md](cli/README.md) |
 | 理解概念与职责 | [concepts.md](concepts.md)、[architecture.md](architecture.md) | [schematic-connectivity-model.md](schematic-connectivity-model.md) |

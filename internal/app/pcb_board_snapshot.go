@@ -29,9 +29,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -50,7 +51,7 @@ type boardPad struct {
 	Y          float64 `json:"y"`
 	W          float64 `json:"width,omitempty"`
 	H          float64 `json:"height,omitempty"`
-	Rotation   float64 `json:"rotation,omitempty"`
+	Rotation   float64 `json:"rotation"`
 	PadType    int     `json:"padType,omitempty"` // 0=NORMAL 1=TEST 2=MARK_POINT
 	Shape      any     `json:"shape,omitempty"`
 	SpecialPad any     `json:"specialPad,omitempty"`
@@ -76,7 +77,7 @@ type boardComp struct {
 	Rotation   float64     `json:"rotation"`
 	Locked     bool        `json:"locked,omitempty"`
 	BBox       *layoutBBox `json:"bbox,omitempty"` // 渲染包围盒（含丝印，非 IPC courtyard）
-	Pads       []boardPad  `json:"pads,omitempty"`
+	Pads       []boardPad  `json:"pads"`
 }
 
 // center 返回判位置该用的坐标：有 bbox 用 bbox 几何中心，否则退回 anchor。
@@ -277,21 +278,24 @@ func (o *boardOutline) containsPoint(x, y float64) bool {
 // 报错），下游据此降级并在报告里说明——**绝不能因为某段数据缺失就静默跳过一整维
 // 却仍然给满分**，那会让"好板得高分"的校准判据失去意义。
 type boardSnapshot struct {
-	Components   []boardComp          `json:"components"`
-	Outline      *boardOutline        `json:"outline,omitempty"`
-	Silk         []pcbSilkText        `json:"silk,omitempty"`
-	CopperLayers int                  `json:"copperLayers,omitempty"`
-	Rules        *boardRules          `json:"rules,omitempty"`
-	Copper       *boardCopperSnapshot `json:"copper,omitempty"`
+	ComponentsAvailability string               `json:"componentsAvailability,omitempty"`
+	Components             []boardComp          `json:"components"`
+	Outline                *boardOutline        `json:"outline,omitempty"`
+	Silk                   []pcbSilkText        `json:"silk,omitempty"`
+	CopperLayers           int                  `json:"copperLayers,omitempty"`
+	Rules                  *boardRules          `json:"rules,omitempty"`
+	Copper                 *boardCopperSnapshot `json:"copper,omitempty"`
 	// RoutedLines 是抓取时板上已布铜线段数（pcb.line.list 计数）。指针三态：
 	// nil = 旧 dump/没读到（未知），0 = 真没布线。routable 维用它对**成品板**
 	// 诚实 —— ratsnest 交叉不知道板子已经布完了，五块开源好板校准实锤该维在
 	// 成品板上恒 26~40（布线自由度早已被真实走线兑现，量表系统性偏低）。
-	RoutedLines    *int     `json:"routedLines,omitempty"`
-	Partial        []string `json:"partial,omitempty"`
-	CapturedAt     string   `json:"capturedAt,omitempty"`
-	Project        string   `json:"project,omitempty"`
-	SemanticSHA256 string   `json:"semanticSha256,omitempty"`
+	RoutedLines    *int                `json:"routedLines,omitempty"`
+	Partial        []string            `json:"partial,omitempty"`
+	CapturedAt     string              `json:"capturedAt,omitempty"`
+	Project        string              `json:"project,omitempty"`
+	SemanticSHA256 string              `json:"semanticSha256,omitempty"`
+	Capture        *pcbCaptureEvidence `json:"capture,omitempty"`
+	Availability   map[string]string   `json:"availability,omitempty"`
 }
 
 // boardCopperSnapshot keeps the connector's exact JSON projections.  The list
@@ -477,7 +481,10 @@ func (s *boardSnapshot) note(format string, args ...any) {
 // rotation/locked（apComp 有 locked 但无 device，cpComp 有 device 但走两趟合并）。
 // 这里一次取全，是它们的超集。
 func parseBoardComponents(result map[string]any) []boardComp {
-	raw, _ := result["components"].([]any)
+	raw, ok := result["components"].([]any)
+	if !ok {
+		return nil
+	}
 	out := make([]boardComp, 0, len(raw))
 	for _, ri := range raw {
 		cm, ok := ri.(map[string]any)
@@ -507,6 +514,7 @@ func parseBoardComponents(result map[string]any) []boardComp {
 			}
 		}
 		if rawPads, ok := cm["pads"].([]any); ok {
+			c.Pads = make([]boardPad, 0, len(rawPads))
 			for _, rp := range rawPads {
 				pm, ok := rp.(map[string]any)
 				if !ok {
@@ -614,14 +622,22 @@ type boardSnapshotOpts struct {
 // 但与之不同的是这里把降级**显式记录**下来而不是只往 stderr 打一行 warning，
 // 因为打分报告必须能说明"这一维为什么没算"。
 func fetchBoardSnapshot(cfg *appConfig, window string, opts boardSnapshotOpts) (*boardSnapshot, error) {
-	snap := &boardSnapshot{CapturedAt: time.Now().UTC().Format(time.RFC3339)}
+	capture := newPCBCaptureEvidence()
+	snap := &boardSnapshot{CapturedAt: capture.StartedAt, Capture: capture, Availability: map[string]string{}}
 
-	res, err := requestAction(cfg, "pcb.components.list", window,
+	res, err := capture.read(cfg, "pcb.components.list", window,
 		map[string]any{"includeBBox": true, "includePads": true})
 	if err != nil {
 		return nil, fmt.Errorf("fetch PCB components: %w", err)
 	}
 	snap.Components = parseBoardComponents(res.Result)
+	if raw, ok := res.Result["components"].([]any); !ok || len(raw) != len(snap.Components) {
+		snap.ComponentsAvailability = "unavailable"
+		snap.note("components inventory unavailable or contains malformed records")
+	} else {
+		snap.ComponentsAvailability = "available"
+	}
+	snap.Availability["components"] = snap.ComponentsAvailability
 	if len(snap.Components) == 0 {
 		snap.note("no components on the board")
 	}
@@ -637,17 +653,25 @@ func fetchBoardSnapshot(cfg *appConfig, window string, opts boardSnapshotOpts) (
 
 	// 板框：pcb.outline.get 在 PCB 非前台时返 null（既有坑），此时 outline 为 nil，
 	// 所有「到板边」维度必须降级而不是当成 0 距离。
-	if ores, oerr := requestAction(cfg, "pcb.outline.get", window, nil); oerr == nil && ores != nil {
+	if ores, oerr := capture.read(cfg, "pcb.outline.get", window, nil); oerr == nil && ores != nil {
 		snap.Outline = parseBoardOutline(ores.Result)
+	}
+	snap.Availability["outline"] = "unknown"
+	if snap.Outline != nil {
+		snap.Availability["outline"] = "available"
 	}
 	snap.sanitizeOutline()
 	// 已布线段计数（best-effort）：routable 维靠它识别成品板。读不到保持 nil
 	//（未知），与「真没布线」(0) 区分。
-	if lres, lerr := requestAction(cfg, "pcb.line.list", window, nil); lerr == nil && lres != nil {
+	if lres, lerr := capture.read(cfg, "pcb.line.list", window, nil); lerr == nil && lres != nil {
 		if raw, ok := mnav(lres.Result, "lines").([]any); ok {
 			n := len(raw)
 			snap.RoutedLines = &n
 		}
+	}
+	snap.Availability["routedLines"] = "unknown"
+	if snap.RoutedLines != nil {
+		snap.Availability["routedLines"] = "available"
 	}
 	if snap.Outline == nil {
 		snap.note("board outline unavailable (is the PCB the foreground document?) — edge/off-board dimensions skipped")
@@ -669,26 +693,70 @@ func fetchBoardSnapshot(cfg *appConfig, window string, opts boardSnapshotOpts) (
 		snap.note("board outline is an AABB approximation (%s) — edge distances on a non-rectangular board are approximate", why)
 	}
 
+	for _, name := range []string{"silk", "rules", "layers", "copper"} {
+		snap.Availability[name] = "not-requested"
+	}
 	if opts.withSilk {
-		silk, serr := fetchPcbSilk(cfg, window)
+		snap.Availability["silk"] = "unknown"
+		sres, serr := capture.read(cfg, "pcb.silk.list", window, nil)
+		if serr == nil && sres != nil {
+			snap.Silk, serr = parsePcbSilkTexts(sres.Result)
+		}
 		if serr != nil {
 			snap.note("silkscreen unreadable (%v) — silk consistency dimensions skipped", serr)
 		} else {
-			snap.Silk = silk
+			snap.Availability["silk"] = "available"
+			for _, text := range snap.Silk {
+				if text.Visible == nil {
+					snap.note("silkscreen visibility missing for %s", text.ID)
+				}
+				if text.LineWidth == nil {
+					snap.note("silkscreen line width missing for %s", text.ID)
+				}
+			}
 		}
 	}
 	if opts.withRules {
-		snap.Rules = rulesToBoard(fetchPcbRules(cfg, window))
+		snap.Availability["rules"] = "unknown"
+		rres, rerr := capture.read(cfg, "pcb.drc.rules", window, nil)
+		if rerr == nil && rres != nil {
+			parsed := parsePcbRules(rres.Result)
+			if parsed.source == "live" {
+				snap.Rules = rulesToBoard(parsed)
+				snap.Availability["rules"] = "available"
+			}
+		}
+		if snap.Rules == nil {
+			snap.note("live DRC rules unavailable — no default values recorded as measured rules")
+		}
 	}
 	if opts.withLayers {
-		if n, lerr := fetchCopperLayerCount(cfg, window); lerr == nil {
-			snap.CopperLayers = n
-		} else {
-			snap.note("copper layer count unreadable (%v)", lerr)
+		snap.Availability["layers"] = "unknown"
+		lres, lerr := capture.read(cfg, "pcb.layers.list", window, nil)
+		if lerr == nil && lres != nil {
+			if n, ok := asFloatOK(lres.Result["copperLayerCount"]); ok && n > 0 {
+				snap.CopperLayers = int(n)
+				snap.Availability["layers"] = "available"
+			}
+		}
+		if snap.CopperLayers == 0 {
+			snap.note("copper layer count unreadable")
 		}
 	}
 	if opts.withCopper {
-		snap.fetchCopper(cfg, window)
+		snap.fetchCopper(cfg, window, capture)
+		snap.Availability["copper"] = "available"
+		for _, state := range snap.Copper.Availability {
+			if state != "available" {
+				snap.Availability["copper"] = "unknown"
+			}
+		}
+	}
+	if capture.mismatch != nil {
+		return snap, capture.mismatch
+	}
+	for _, missing := range capture.Missing {
+		snap.note("capture provenance: %s", missing)
 	}
 	semantic, serr := boardSnapshotSemanticSHA256(snap)
 	if serr != nil {
@@ -699,11 +767,11 @@ func fetchBoardSnapshot(cfg *appConfig, window string, opts boardSnapshotOpts) (
 	return snap, nil
 }
 
-func (s *boardSnapshot) fetchCopper(cfg *appConfig, window string) {
+func (s *boardSnapshot) fetchCopper(cfg *appConfig, window string, capture *pcbCaptureEvidence) {
 	c := &boardCopperSnapshot{Availability: map[string]string{}}
 	s.Copper = c
 	read := func(name, action string, payload map[string]any, key string, dst *[]any) map[string]any {
-		res, err := requestAction(cfg, action, window, payload)
+		res, err := capture.read(cfg, action, window, payload)
 		if err != nil || res == nil {
 			c.Availability[name] = "unknown"
 			s.note("copper %s unreadable (%v)", name, err)
@@ -753,11 +821,18 @@ func boardSnapshotSemanticSHA256(s *boardSnapshot) (string, error) {
 	}
 	clone := *s
 	clone.CapturedAt = ""
+	clone.Capture = nil
 	// Project is capture provenance, not board semantics. `pcb dump` resolves
 	// and attaches the user-facing project label after fetchBoardSnapshot has
 	// collected the geometry; hashing it made every --project dump invalidate
 	// its own semanticSha256 as soon as it was written to disk.
 	clone.Project = ""
+	clone.Partial = nil
+	for _, note := range s.Partial {
+		if !strings.HasPrefix(note, "capture provenance:") {
+			clone.Partial = append(clone.Partial, note)
+		}
+	}
 	clone.SemanticSHA256 = ""
 	raw, err := json.Marshal(clone)
 	if err != nil {
@@ -799,4 +874,34 @@ func loadBoardSnapshotFile(r io.Reader) (*boardSnapshot, error) {
 	// 坏 polygon 可能已经落在旧 dump 里 —— 回放路径同样要过护栏。
 	snap.sanitizeOutline()
 	return &snap, nil
+}
+
+// writeBoardSnapshotFile preserves the exact dump bytes, then hashes the
+// persisted file in a separate receipt. A digest inside its own JSON document
+// cannot be the file's byte hash; semanticSha256 remains a different contract.
+func writeBoardSnapshotFile(path string, data []byte) error {
+	var snapshot boardSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return fmt.Errorf("parse snapshot before writing: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read persisted snapshot: %w", err)
+	}
+	actualSHA := sha256Hex(persisted)
+	if actualSHA != sha256Hex(data) {
+		return fmt.Errorf("snapshot changed before file-hash receipt could be written")
+	}
+	receipt := map[string]any{
+		"kind": "pcb-dump-file", "version": 1, "snapshot": filepath.Base(path),
+		"sha256": actualSHA, "bytes": len(persisted), "capturedAt": snapshot.CapturedAt,
+		"capture": snapshot.Capture, "availability": snapshot.Availability, "partial": snapshot.Partial,
+	}
+	if err := writeJSONFile(path+".capture.json", receipt); err != nil {
+		return fmt.Errorf("write snapshot capture receipt: %w", err)
+	}
+	return nil
 }

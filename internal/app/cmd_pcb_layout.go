@@ -196,11 +196,44 @@ func newPcbLayoutCheckCmd(stdout, stderr io.Writer) *cobra.Command {
 
 func newPcbLayoutRenderCmd(stdout, stderr io.Writer) *cobra.Command {
 	var boardPath, fromPath, candidatePath, candidateID, outPath string
+	var actual bool
+	var side string
 	cmd := &cobra.Command{
 		Use:   "render",
-		Short: "Render a solve candidate from the same projected data used by check",
+		Short: "Render a solve candidate or an actual PCB readback as SVG",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if actual {
+				if cmd.Flags().Changed("from") || cmd.Flags().Changed("candidate") || cmd.Flags().Changed("candidate-id") {
+					return fmt.Errorf("--actual cannot be combined with --from, --candidate or --candidate-id")
+				}
+				if boardPath == "" || outPath == "" {
+					return fmt.Errorf("--actual requires --board and --out")
+				}
+				if err := rejectLayoutOutputAliases([]string{boardPath}, []string{outPath}); err != nil {
+					return err
+				}
+				raw, err := os.ReadFile(boardPath)
+				if err != nil {
+					return fmt.Errorf("read board snapshot: %w", err)
+				}
+				var svg bytes.Buffer
+				if err := renderPCBActualSVG(&svg, raw, side); err != nil {
+					return err
+				}
+				if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+					return err
+				}
+				if err := writeAtomic(outPath, svg.Bytes()); err != nil {
+					return err
+				}
+				fmt.Fprintf(stderr, "pcb layout render: actual readback (%s; auxiliary, not official EDA capture) → %s\n", side, outPath)
+				fmt.Fprintln(stdout, outPath)
+				return nil
+			}
+			if cmd.Flags().Changed("side") {
+				return fmt.Errorf("--side requires --actual; candidate rendering is unchanged")
+			}
 			if boardPath == "" || candidatePath == "" || outPath == "" {
 				return fmt.Errorf("--board, --candidate and --out are required")
 			}
@@ -263,6 +296,8 @@ func newPcbLayoutRenderCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&candidatePath, "candidate", "", "candidate JSON or solve report JSON")
 	cmd.Flags().StringVar(&candidateID, "candidate-id", "", "candidate id when --candidate is a multi-candidate solve report")
 	cmd.Flags().StringVar(&outPath, "out", "", "SVG output path")
+	cmd.Flags().BoolVar(&actual, "actual", false, "render actual readback only; no candidate, solver, repositioning or live editor access")
+	cmd.Flags().StringVar(&side, "side", "both", "actual rendering: top, bottom (mirrored assembly view), or both")
 	return cmd
 }
 

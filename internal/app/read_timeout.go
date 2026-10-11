@@ -23,6 +23,9 @@ func effectiveReadTimeout(action string, payload any, requested time.Duration) t
 	}
 	budget := time.Duration(0)
 	switch action {
+	case "schematic.attribute.move":
+		// Before and after may each need a bounded 15s native visibility read.
+		budget = 45 * time.Second
 	case "document.open", "schematic.page.open":
 		budget = documentOpenReadBudget
 	case "schematic.components.list":

@@ -109,6 +109,7 @@ Compose/Apply 和整板设计验收留到下一版本；命令可用不代表这
 | EDA 配置、考试设计规则、PWR 网络类绑定 | [pcb-config.md](references/pcb-config.md) |
 | 从需求到整板 | [design-flow.md](references/design-flow.md)、[design-decisions.md](references/design-decisions.md) |
 | 选型、标准电路、库器件 | [part-selection.md](references/part-selection.md)、[library-authoring.md](references/library-authoring.md)、[standard-parts.json](references/standard-parts.json) |
+| 交付原理图、PCB 正反面与图册 | [清晰设计图交付](references/design-drawings.md) |
 | action 或队列字段 | [actions.md](references/actions.md)；未知官方接口先 `easyeda api search/show` |
 | Web 原始文档源码读取与同源 roundtrip 验证 | [document-source.md](references/document-source.md)；不接受任意新源码或替代设计验收 |
 

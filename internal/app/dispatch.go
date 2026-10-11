@@ -143,12 +143,15 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		return libraryWriteFailureError(action, respBody, errors.Join(errActionFailed, &actionError{Action: action, Code: parsed.Error.Code,
 			Message: parsed.Error.Message, Detail: parsed.Error.Detail}))
 	}
-	if action == "pcb.silk.align" || action == "pcb.silk.set" {
+	if action == "pcb.silk.align" || action == "pcb.silk.set" || action == "schematic.attribute.move" {
 		var envelope struct {
 			Result map[string]any `json:"result"`
 		}
 		if err := json.Unmarshal(respBody, &envelope); err != nil {
 			return errActionFailed
+		}
+		if err := schAttributeMoveResultError(action, envelope.Result); err != nil {
+			return err
 		}
 		if err := silkSetResultError(action, envelope.Result, respBody); err != nil {
 			return err
@@ -395,6 +398,8 @@ func saveFirstArtifact(res *actionResult, out string, stderr io.Writer) error {
 // commands (sch check/drc/sheet) can re-wrap their typed report in the same
 // {id,type,version,ok,result} envelope the transparent commands stream (#66).
 type actionResult struct {
+	WindowID  string         `json:"windowId,omitempty"`
+	CreatedAt time.Time      `json:"createdAt,omitempty"`
 	ID        string         `json:"id"`
 	Type      string         `json:"type"`
 	Version   string         `json:"version"`
@@ -425,7 +430,7 @@ func requestAction(cfg *appConfig, action, window string, payload any) (*actionR
 // requestActionTimed is requestAction with a caller-chosen round-trip timeout,
 // for heavy actions (DRC on a real board routinely exceeds the default).
 func requestActionTimed(cfg *appConfig, action, window string, payload any, timeout time.Duration) (*actionResult, error) {
-	if isVerifiedLibraryWrite(action) {
+	if isVerifiedLibraryWrite(action) || action == "schematic.attribute.move" {
 		// Even a known precondition refusal is retained for explicit inspection;
 		// do not let an unwrapped actionError re-enable queue-blocked retries.
 		return requestActionOnce(cfg, action, window, payload, timeout)
@@ -456,6 +461,8 @@ func requestActionOnce(cfg *appConfig, action, window string, payload any, timeo
 
 	var parsed struct {
 		ID        string         `json:"id"`
+		WindowID  string         `json:"windowId,omitempty"`
+		CreatedAt time.Time      `json:"createdAt,omitempty"`
 		Type      string         `json:"type"`
 		Version   string         `json:"version"`
 		OK        bool           `json:"ok"`
@@ -471,7 +478,7 @@ func requestActionOnce(cfg *appConfig, action, window string, payload any, timeo
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, libraryWriteFailureError(action, respBody, fmt.Errorf("decode %s response: %w", action, err))
 	}
-	res := &actionResult{ID: parsed.ID, Type: parsed.Type, Version: parsed.Version, OK: parsed.OK, Result: parsed.Result, Artifacts: parsed.Artifacts, Context: parsed.Context, Seq: parseSeqCounters(respBody)}
+	res := &actionResult{ID: parsed.ID, WindowID: parsed.WindowID, CreatedAt: parsed.CreatedAt, Type: parsed.Type, Version: parsed.Version, OK: parsed.OK, Result: parsed.Result, Artifacts: parsed.Artifacts, Context: parsed.Context, Seq: parseSeqCounters(respBody)}
 	if !parsed.OK {
 		msg := "ok=false"
 		code := ""
@@ -502,6 +509,9 @@ func requestActionOnce(cfg *appConfig, action, window string, payload any, timeo
 		return res, err
 	}
 	if err := silkAlignmentError(action, res.Result); err != nil {
+		return res, err
+	}
+	if err := schAttributeMoveResultError(action, res.Result); err != nil {
 		return res, err
 	}
 	if err := silkSetResultError(action, res.Result, respBody); err != nil {
@@ -578,6 +588,9 @@ func dispatchCapture(cfg *appConfig, action, window string, payload any, stdout 
 		return res, err
 	}
 	if err := silkAlignmentError(action, res.Result); err != nil {
+		return res, err
+	}
+	if err := schAttributeMoveResultError(action, res.Result); err != nil {
 		return res, err
 	}
 	if err := silkSetResultError(action, res.Result, respBody); err != nil {

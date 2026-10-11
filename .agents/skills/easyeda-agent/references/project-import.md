@@ -2,6 +2,37 @@
 
 本页描述 Altium Designer 工程迁移的当前能力边界。它不是 `easyeda` 的导入命令。
 
+
+## 文档重载与只读就绪核查
+
+`easyeda doc reload <uuid> --project <project> --json` 显式保存、确认关页后只重开一次。
+重开使用 30 秒连接器预算（另留响应宽限），成功后在 10 秒内核对活动工程／文档／类型／tab
+以及连续稳定的完整组件清单。保存须返回布尔 `saved:true`；关闭、重开或对象读取失败均停止，
+不自动重发 open，不用 GUI 刷新兜底。
+
+JSON 回执保留 `saved/reloaded/documentType/activeRestored`，并记录目标、阶段请求 ID、CLI
+观察起止时间和 readiness。失败也输出已发生阶段，进程仍非零退出；`saved:true` 而重开失败
+是 partial，不等于重载通过。重载非活动文档后，恢复旧活动页必须新读确认；恢复失败单独
+报告，已完成的重载事实不丢失。主机观察时间与响应 `createdAt` 分别保留。
+
+超时后可执行纯只读核查：
+
+```bash
+easyeda doc ready <expected-document-uuid> --project <project> --timeout 10s --json
+```
+
+它不保存、关闭、打开或切页；指定目标必须已活动，省略 UUID 则检查当前页。每次组件读取前后
+核对同一上下文，按 `primitiveId` 排序完整组件记录计算指纹；非空清单须连续两次相同，空页
+须三次。相同数量而内容不同不算稳定，缺清单、缺身份、重复 ID、上下文漂移或超时均拒绝。
+显式 `partial`／`incomplete`、非空 `captureErrors`、不可用或错型的采集状态同样拒绝；
+PCB 未请求的焊盘／包络可保留 `not-requested`，该命令不扩大为几何验收。
+`--timeout` 为选定窗口后的总读取预算，范围 1 秒至 1 分钟；不会等待队列阻塞自动重试。
+
+`ready:true` 只证明当前组件清单稳定可读，**不证明先前超时 handler 已结束，也不替代 reload
+成功、完整网络／导线／几何回读或持久化验收**。保留原失败及保存、关闭、关闭后目标离开活动态
+的证据；另作完整新回读并与已保存目标对账。恢复后的新验收周期只执行一次显式 save/reload，
+新周期仍失败就停止，不循环重开；不得把原失败改写成成功。
+
 ## Altium Designer 工程：当前 `unsupported`
 
 当前没有经过验证的 typed action 或 CLI 能把 `.SchDoc` / `.PcbDoc` 程序化导入

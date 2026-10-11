@@ -937,6 +937,10 @@ func (r *applyRunner) execute() error {
 
 		// failure path
 		failure := journalEntry{Idx: i + 1, ID: ref, Status: "fail", Ms: ms, Error: execErr.Error()}
+		var attributeMoveErr *unverifiedSchAttributeMoveError
+		if errors.As(execErr, &attributeMoveErr) {
+			failure.RawResponse = attributeMoveErr.rawResponse
+		}
 		var silkSetErr *unverifiedSilkSetError
 		if errors.As(execErr, &silkSetErr) {
 			failure.RawResponse = silkSetErr.rawResponse
@@ -958,6 +962,9 @@ func (r *applyRunner) execute() error {
 		fmt.Fprintf(r.stderr, "\n✗ step [%d/%d] %s failed: %v\n", i+1, len(r.pb.Steps), ref, execErr)
 		if libraryErr != nil {
 			return fmt.Errorf("playbook stopped at step %s: %w", ref, execErr)
+		}
+		if attributeMoveErr != nil {
+			return execErr
 		}
 		if silkSetErr != nil {
 			return fmt.Errorf("playbook stopped at step %s: %w", ref, execErr)
@@ -1011,6 +1018,10 @@ func (r *applyRunner) execute() error {
 
 // executeStep runs one step with retry/verify semantics and returns captured vars.
 func (r *applyRunner) executeStep(s *playbookStep, catalog map[string]protocol.ActionSpec) (map[string]string, error) {
+	attributeMove := s.Action == "schematic.attribute.move"
+	if words := strings.Fields(s.Run); len(words) >= 2 && words[0] == "sch" && words[1] == "attribute-move" {
+		attributeMove = true
+	}
 	if err := validateSchematicExpectationStep(s); err != nil {
 		return nil, &schematicExpectationError{err}
 	}
@@ -1025,8 +1036,15 @@ func (r *applyRunner) executeStep(s *playbookStep, catalog map[string]protocol.A
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		result, err := r.executeOnce(s, timeout)
+		if attributeMove && err != nil {
+			return nil, schAttributeMoveFailure(err, "")
+		}
 		var libraryErr *unverifiedLibraryWriteError
 		if errors.As(err, &libraryErr) {
+			return nil, err
+		}
+		var attributeMoveErr *unverifiedSchAttributeMoveError
+		if errors.As(err, &attributeMoveErr) {
 			return nil, err
 		}
 		var silkSetErr *unverifiedSilkSetError
@@ -1059,6 +1077,10 @@ func (r *applyRunner) executeStep(s *playbookStep, catalog map[string]protocol.A
 			captured, aerr := r.captureAndAssert(s.Capture, s.Assert, result)
 			if aerr == nil {
 				return captured, nil
+			}
+			if attributeMove {
+				raw, _ := json.Marshal(result)
+				return captured, schAttributeMoveFailure(aerr, string(raw))
 			}
 			err = aerr
 		}
@@ -1188,6 +1210,12 @@ func (r *applyRunner) runAction(action string, payload map[string]any, timeout t
 	if err := silkAlignmentError(action, parsed.Result); err != nil {
 		return anyResult(parsed.Result), err
 	}
+	if err := schAttributeMoveResultError(action, parsed.Result); err != nil {
+		if r.stdout != nil {
+			fmt.Fprintln(r.stdout, string(respBody))
+		}
+		return anyResult(parsed.Result), err
+	}
 	if err := silkSetResultError(action, parsed.Result, respBody); err != nil {
 		if r.stdout != nil {
 			fmt.Fprintln(r.stdout, string(respBody))
@@ -1264,6 +1292,9 @@ func (r *applyRunner) runSubcommand(run string, flags map[string]any, args []str
 		var libraryErr *unverifiedLibraryWriteError
 		if errors.As(commandErr, &libraryErr) {
 			return parseTrailingJSON(out.String()), fmt.Errorf("run %q: %w", run, commandErr)
+		}
+		if words := strings.Fields(run); len(words) >= 2 && words[0] == "sch" && words[1] == "attribute-move" {
+			return parseTrailingJSON(out.String()), schAttributeMoveFailure(commandErr, out.String())
 		}
 		var silkSetErr *unverifiedSilkSetError
 		if errors.As(commandErr, &silkSetErr) {

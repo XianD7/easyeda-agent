@@ -24,6 +24,14 @@ easyeda <domain> <action> [flags]
 | `easyeda skill` | skill 目录单独管理（status / sync；`update` 已含其能力） |
 | `easyeda debug` | 逃生舱（exec-js 等开发/调试命令） |
 
+## 设计图交付接口
+
+- `pcb layout render --actual --board <dump.json> --side top|bottom|both --out <图.svg>`：实际回读辅助图；与候选输入互斥，不执行 EDA 动作。
+- `project drawings --from <drawings.json> --out <新目录>`：纯离线组合一页原理图与一块 PCB 的图册，核对文件/回读绑定并保留状态声明。
+- `doc reload --json`、`pcb dump`、`pcb stage-snapshot` 保留各自职责；重载凭据、采集完整性和设计验收不是同一返回状态。
+
+输入、图源与朝向见[清晰设计图交付](../.agents/skills/easyeda-agent/references/design-drawings.md)。
+
 ## 验收分层：基础动作先行
 
 `sch`、`pcb` 等 Cobra 域同时包含基础动作和高级业务能力，不能按顶级命令名判断测试层级。

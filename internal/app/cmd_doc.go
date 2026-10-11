@@ -36,7 +36,8 @@ func newDocCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 			"  easyeda doc ls --project <name>                      list all schematic pages + PCBs, ★=active\n" +
 			"  easyeda doc open <name|uuid> --project <name>        open a document (schematic page or PCB)\n" +
 			"  easyeda doc switch <name|uuid> --project <name>      switch to a document (same as open)\n" +
-			"  easyeda doc reload [name|uuid] --project <name>      save, close, and reopen a document\n\n" +
+			"  easyeda doc reload [name|uuid] --project <name>      save, close, and reopen a document\n" +
+			"  easyeda doc ready [uuid] --project <name>            verify current readability without navigation\n\n" +
 			"Context is read live (not the connect-time snapshot), so the active marker\nand `daemon health` reflect the real foreground document. If the project has\nno active editor tab, `doc ls` still uses project inventories and `doc open`\ncan recover by UUID, then confirms the new active document with a fresh read.",
 	}
 	doc.PersistentFlags().StringVar(&window, "window", "", "EasyEDA window ID (usually prefer --project)")
@@ -101,7 +102,7 @@ func newDocCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 			// polled with pcb.components.list rather than skipped (issue #161).
 			ready := waitDocSettleFor(cfg, win, match.Type)
 			if !ready {
-				return fmt.Errorf("document %s became active but its %s data did not settle; refresh the editor or open it once from the project tree, then read back actual objects", match.UUID, match.Type)
+				return fmt.Errorf("document %s became active but its %s data did not settle; stop writes and retain the failure/context; the unavailable readback is not successful reload evidence", match.UUID, match.Type)
 			}
 			out := map[string]any{
 				"switchedTo": match,
@@ -149,7 +150,7 @@ func newDocCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 				return fmt.Errorf("document.open returned but active document is not %s; the page may still be loading", match.UUID)
 			}
 			if !waitDocSettleFor(cfg, win, match.Type) {
-				return fmt.Errorf("document %s became active but its %s data did not settle; refresh the editor or open it once from the project tree, then read back actual objects", match.UUID, match.Type)
+				return fmt.Errorf("document %s became active but its %s data did not settle; stop writes and retain the failure/context; the unavailable readback is not successful reload evidence", match.UUID, match.Type)
 			}
 			out := map[string]any{
 				"opened": match,
@@ -198,60 +199,58 @@ document afterward and reports it as "activeRestored", so the ★ does not drift
   easyeda doc reload PCB3 --project ceshi # reload a specific PCB
   easyeda pcb pour-rebuild                # then re-pour under the refreshed rules`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			startedAt := reloadNow()
+			requested := ""
+			if len(args) == 1 {
+				requested = args[0]
+			}
+			failBeforeReload := func(stage, win string, err error) error {
+				if jsonOut {
+					r := &documentReloadReceipt{SchemaVersion: 1, Status: "failed", WindowID: win,
+						Target: requested, StartedAt: startedAt, CompletedAt: reloadNow(),
+						TimeSource: "cli-host-observation", FailedStage: stage, Error: err.Error(),
+						Steps: []documentReloadStep{}}
+					if writeErr := writeJSON(stdout, r); writeErr != nil {
+						return writeErr
+					}
+				}
+				return err
+			}
 			docs, activeUUID, win, err := discoverDocs(cfg, window)
 			if err != nil {
-				return err
+				return failBeforeReload("discover", win, err)
 			}
 			target := activeUUID
 			if len(args) == 1 {
 				match, err := resolveDoc(docs, args[0])
 				if err != nil {
-					return err
+					return failBeforeReload("resolve-target", win, err)
 				}
 				target = match.UUID
 			}
 			if target == "" {
-				return fmt.Errorf("no active document to reload (run `easyeda doc ls`)")
+				return failBeforeReload("resolve-target", win, fmt.Errorf("no active document to reload (run `easyeda doc ls`)"))
 			}
-			docType, err := reloadDocumentByUUID(cfg, win, target)
+			receipt, err := reloadDocumentWithReceipt(cfg, win, target, activeUUID)
+			if jsonOut {
+				if writeErr := writeJSON(stdout, receipt); writeErr != nil {
+					return writeErr
+				}
+				return err
+			}
 			if err != nil {
 				return err
 			}
-			// Restore the pre-reload active document. reopen leaves the target
-			// foreground even when the caller reloaded a NON-active page, so
-			// without this the ★ silently drifts and later commands land on the
-			// wrong page (issue #67). Best-effort: a restore failure is reported
-			// but the reload itself already succeeded.
-			restored := activeUUID
+			fmt.Fprintf(stdout, "✓ reloaded %s %s (saved → closed → reopened)\n", receipt.DocumentType, target)
 			if activeUUID != "" && activeUUID != target {
-				if _, rerr := requestAction(cfg, "document.open", win,
-					map[string]any{"uuid": activeUUID}); rerr != nil {
-					restored = ""
-				}
-			}
-			out := map[string]any{
-				"reloaded":       target,
-				"documentType":   docType,
-				"saved":          true,
-				"activeRestored": restored,
-			}
-			if jsonOut {
-				return writeJSON(stdout, out)
-			}
-			fmt.Fprintf(stdout, "✓ reloaded %s %s (saved → closed → reopened)\n", docType, target)
-			if activeUUID != "" && activeUUID != target {
-				if restored != "" {
-					fmt.Fprintf(stdout, "  ↩ restored active document to %s\n", restored)
-				} else {
-					fmt.Fprintf(stdout, "  ⚠ could not restore active document %s — active is now %s\n", activeUUID, target)
-				}
+				fmt.Fprintf(stdout, "  ↩ restored active document to %s\n", receipt.ActiveRestored)
 			}
 			return nil
 		},
 	}
 	reloadCmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON instead of a line")
 
-	doc.AddCommand(lsCmd, switchCmd, openCmd, reloadCmd, newDocSourceCmd(cfg, &window, stdout))
+	doc.AddCommand(lsCmd, switchCmd, openCmd, reloadCmd, newDocReadyCmd(cfg, &window, stdout), newDocSourceCmd(cfg, &window, stdout))
 	return doc
 }
 
@@ -448,15 +447,20 @@ func strField(m map[string]any, key string) string {
 // foreground first when it isn't already. Returns the document's type
 // ("pcb"/"schematic") so callers can branch.
 func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
-	cur, err := requestAction(cfg, "document.current", win, nil)
+	receipt, err := reloadDocumentWithReceipt(cfg, win, target, "")
+	return receipt.DocumentType, err
+}
+
+func reloadDocumentObserved(cfg *appConfig, win, target string, receipt *documentReloadReceipt) (string, error) {
+	cur, err := receipt.request(cfg, "inspect", "document.current", win, nil, defaultActionTimeout)
 	if err != nil {
 		return "", err
 	}
 	if cur.Context == nil || cur.Context.DocumentUUID != target || cur.Context.TabID == "" {
-		if _, err := requestAction(cfg, "document.open", win, map[string]any{"uuid": target}); err != nil {
+		if _, err := receipt.request(cfg, "activate", "document.open", win, map[string]any{"uuid": target}, defaultActionTimeout); err != nil {
 			return "", err
 		}
-		cur, err = requestAction(cfg, "document.current", win, nil)
+		cur, err = receipt.request(cfg, "inspect", "document.current", win, nil, defaultActionTimeout)
 		if err != nil {
 			return "", err
 		}
@@ -467,20 +471,39 @@ func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
 			return cur.Context.DocumentType, fmt.Errorf("document %s became active before reload but its data did not settle", target)
 		}
 	}
+	identity, identityErr := readyCurrentIdentity(cur, target, cfg.project)
+	if identityErr != nil {
+		return "", fmt.Errorf("reload target identity: %w", identityErr)
+	}
+	cur.Context = identity
 	docType := cur.Context.DocumentType
+	if cur.Context.ProjectUUID == "" || (docType != "pcb" && docType != "schematic") {
+		return docType, fmt.Errorf("reload requires an identified schematic or PCB document")
+	}
+	projectBeforeReload := cur.Context.ProjectUUID
 	saveAction := "schematic.save"
 	if docType == "pcb" {
 		saveAction = "pcb.save"
 	}
-	if _, err := requestAction(cfg, saveAction, win, nil); err != nil {
+	receipt.DocumentType = docType
+	receipt.TargetContext = cur.Context
+	saveResult, err := receipt.request(cfg, "save", saveAction, win, nil, defaultActionTimeout)
+	if err != nil {
 		return docType, fmt.Errorf("save before reload failed: %w", err)
 	}
+	if saveResult == nil || saveResult.Result["saved"] != true {
+		return docType, fmt.Errorf("save before reload was not confirmed (saved:true required); document was not closed or reopened")
+	}
+	if !readyContextEqual(receipt.TargetContext, saveResult.Context) {
+		return docType, fmt.Errorf("save response context differs from reload target; document not closed")
+	}
+	receipt.Saved = true
 	// The typed close action verifies BOTH live identities and captures the
 	// target split before closing. Looking the split up after close is racy: the
 	// host can expose a transient blank tab or a tab from another split.
-	closeRes, err := requestAction(cfg, "document.close", win, map[string]any{
+	closeRes, err := receipt.request(cfg, "close", "document.close", win, map[string]any{
 		"uuid": target, "tabId": cur.Context.TabID,
-	})
+	}, defaultActionTimeout)
 	if err != nil {
 		return docType, fmt.Errorf("close document failed: %w", err)
 	}
@@ -488,6 +511,7 @@ func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
 	if !closed {
 		return docType, fmt.Errorf("close document returned no success for %s; reopen was not attempted", target)
 	}
+	receipt.Closed = true
 	splitScreenID, _ := closeRes.Result["splitScreenId"].(string)
 	splitScreenID = strings.TrimSpace(splitScreenID)
 
@@ -497,13 +521,26 @@ func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
 	// timeout, stop without issuing openDocument at all.
 	closeDeadline := time.Now().Add(10 * time.Second)
 	for {
-		cur, err = requestActionTimed(cfg, "document.current", win, nil, 3*time.Second)
+		cur, err = receipt.request(cfg, "close-settle", "document.current", win, nil, 3*time.Second)
+		if cur != nil && cur.Context != nil && cur.Context.ProjectUUID != "" && cur.Context.ProjectUUID != projectBeforeReload {
+			return docType, fmt.Errorf("project changed while closing document; reopen was not attempted")
+		}
 		noActiveDocument := isNoActiveDocument(cur)
-		if noActiveDocument || (err == nil && (cur.Context == nil || cur.Context.DocumentUUID != target)) {
+		if noActiveDocument {
+			break
+		}
+		if err != nil {
+			return docType, fmt.Errorf("close state could not be read; reopen was not attempted: %w", err)
+		}
+		afterClose, identityErr := readyCurrentIdentity(cur, "", projectBeforeReload)
+		if identityErr != nil {
+			return docType, fmt.Errorf("close state identity is unverified; reopen was not attempted: %w", identityErr)
+		}
+		if afterClose.DocumentUUID != target {
 			break
 		}
 		if time.Now().After(closeDeadline) {
-			return docType, fmt.Errorf("document %s close did not settle within 10s; reopen was not attempted to avoid a duplicate open — check the existing tab, then refresh the editor if it is still loading", target)
+			return docType, fmt.Errorf("document %s close did not settle within 10s; reopen was not attempted to avoid a duplicate open — stop this operation and retain the error/context; do not issue a duplicate open", target)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -512,22 +549,21 @@ func reloadDocumentByUUID(cfg *appConfig, win, target string) (string, error) {
 	if splitScreenID != "" {
 		openPayload["splitScreenId"] = splitScreenID
 	}
-	if _, err := requestActionTimed(cfg, "document.open", win, openPayload, 15*time.Second); err != nil {
-		return docType, fmt.Errorf("reopen after close failed for %s (the target tab is closed; automatic retry was suppressed because the first open may still complete): %w — recover by refreshing the editor or opening the document once from the project tree", target, err)
+	if _, err := receipt.request(cfg, "reopen", "document.open", win, openPayload, defaultActionTimeout); err != nil {
+		return docType, fmt.Errorf("reopen after close failed for %s (the target tab was closed; reopen completion is unconfirmed and automatic retry was suppressed because the first open may still complete): %w — retain this failure and inspect typed connection/context evidence before any further write", target, err)
 	}
-	// Poll until the reopened document is the live active one.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		cur, err = requestAction(cfg, "document.current", win, nil)
-		if err == nil && cur.Context != nil && cur.Context.DocumentUUID == target {
-			if !waitDocSettleFor(cfg, win, docType) {
-				return docType, fmt.Errorf("document %s became active after reopen but its %s objects did not settle; refresh the editor or open it once from the project tree, then read back actual objects", target, docType)
-			}
-			return docType, nil
-		}
-		if time.Now().After(deadline) {
-			return docType, fmt.Errorf("document %s did not become active within 10s after reopen", target)
-		}
-		time.Sleep(500 * time.Millisecond)
+	// The open call has succeeded; establish current identity and a stable full
+	// component inventory with a separate bounded, navigation-free read phase.
+	readyCfg := *cfg
+	readyCfg.project, readyCfg.doc = projectBeforeReload, ""
+	ready, err := receipt.observeReady(&readyCfg, win, target)
+	if err != nil {
+		return docType, fmt.Errorf("document %s reopened but its %s data did not settle: %w; stop writes and retain this failure/context", target, docType, err)
 	}
+	if ready.Active.DocumentType != docType {
+		return docType, fmt.Errorf("document %s changed type after reopen", target)
+	}
+	receipt.Reloaded = target
+	receipt.FinalContext = ready.Active
+	return docType, nil
 }

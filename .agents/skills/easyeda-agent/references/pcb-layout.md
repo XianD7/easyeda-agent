@@ -164,6 +164,14 @@ fresh render 是 reload 后的新 capture 调用和新 artifact，不要求未�
 第 2 轮都没有待修的明显布局/视觉 finding，且 `fixesApplied=false`，才可称整板 Layout 完成并
 进入用户确认；纯观察项可以保留，但必须说明为什么不需要修改。
 
+### 实际回读辅助图
+
+`pcb layout render --actual --board board.json --side top|bottom|both --out board.svg`
+直接显示 dump 中的实际几何和丝印，不应用 candidate 的移动；它与 `--candidate`、`--candidate-id`
+及求解请求 `--from` 互斥。旧候选渲染入口不变。装配底视绕板框中心镜像，支持非零原点；
+官方 `view-side bottom` 仍只是图层聚焦，不是翻板。SDK bbox、采样板框和浏览器字体的表示
+边界必须保留，未知孔径/样式不填造值。出图与图册见[清晰设计图交付](design-drawings.md)。
+
 ### Layout 完成、局部电源铜与用户确认
 
 模块候选全部执行不等于整板 Layout 已完成。先逐项落实板框、固定件、板边方向、机械/封装

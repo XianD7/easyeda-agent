@@ -158,3 +158,23 @@ destagger。先从完整快照计算局部模块几何，经 compose 守卫重�
 完成布局后逐页跑 `sch gate --strict`、目标 pin→net/NC 对账与 `sch export-image`。
 数据检查重点是核心/外围所有权、真实直连、朝向、必检文字遮挡及框包络。
 导图仅辅助发现采集/规则遗漏；发现后补数据检查并重算，不以肉眼兜底判通过。
+
+
+## 只移动属性文字
+
+`easyeda sch attribute-move --from attribute-move.json --project <project> --doc <page-uuid>`
+只修改已有板上器件 `Name` 或 `Designator` 属性的 X/Y，单位 raw，Y 向上。
+参数文件含 `projectUuid`、`documentUuid`、`primitiveId`、有限数值 `x/y` 和完整 `expected` 原状态；
+`expected` 直接来自新鲜 `schematic.components.list(includePagePrimitives:true)` 的单条原生属性记录，
+包括 `primitiveId` 和所有大写状态字段。公式值保留原文，不能用 SVG 渲染后的文字替换 `Value`。
+
+写前核对上下文、父器件和完整原状态；官方 `sch_PrimitiveAttribute.modify(id,{x,y})` 只接收坐标。
+写后再 `get(id)`，核对目标坐标及其余所有状态未变。缺读、漂移、部分写入或 SDK 异常均失败并
+保留 `attempted/before/after/errors`；CLI 与 Apply 不自动重试。该动作不支持新建／删除属性、
+修改文本、隐藏文字、样式调整或移动 pin/netflag 属性。实际可读性仍须官方导图复核，最终显式
+保存、真实重载、新回读后再确认。接口处于离线验证阶段时不得写成已现场通过。
+
+“其余状态未变”只覆盖该接口实际采集字段；不能扩大为原生源码所有字段。重载可能重建
+宿主派生属性 ID；严格 ID 对账失败应保留，只有明确区分持久属性与派生属性后，才可单独按
+唯一 `(ParentPrimitiveId, Key)` 比较已采集内容。重名、歧义、持久 ID 变化不能套用该映射。
+若原生导出显示 `zIndex` 或缺失字段被物化为默认值，逐项记录，不静默忽略或声称全字段仅 XY。

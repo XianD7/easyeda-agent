@@ -649,6 +649,8 @@ not relax guarded page replacement or clear.`,
 	}
 
 	// ── place ─────────────────────────────────────────────────────────────
+	sch.AddCommand(newSchAttributeMoveCmd(cfg, &window, stdout, stderr))
+
 	// schematic.component.place
 	{
 		var lib, uuid, designator string

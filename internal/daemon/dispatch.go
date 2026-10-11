@@ -320,11 +320,24 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 			message, status = "connector disconnected before responding", http.StatusBadGateway
 		}
 		errResp := errorResponse(req.ID, "DISPATCH_FAILED", message, err.Error())
+		errResp.WindowID = req.WindowID // frozen identity of the actual routed connection
 		s.writeHealth.annotateDegraded(&req, &errResp)
 		s.audit.Append(fromResponse(started, &req, &errResp))
 		writeJSON(w, status, errResp)
 		return
 	}
+	// Bind provenance to the connection selected by the hub, never an arbitrary
+	// client hint. Older connectors omit windowId; a conflicting nonempty value
+	// cannot be relabelled as trusted evidence or allowed to persist artifacts.
+	if resp.WindowID != "" && resp.WindowID != req.WindowID {
+		errResp := errorResponse(req.ID, "RESPONSE_WINDOW_MISMATCH", "connector response window differs from the routed connection",
+			fmt.Sprintf("routed window=%q; connector response window=%q", req.WindowID, resp.WindowID))
+		errResp.WindowID = req.WindowID
+		s.audit.Append(fromResponse(started, &req, &errResp))
+		writeJSON(w, http.StatusBadGateway, errResp)
+		return
+	}
+	resp.WindowID = req.WindowID
 	// The connector echoes id/version/ok/result/context/artifacts but does not
 	// stamp createdAt; the daemon owns the wall-clock for forwarded responses.
 	if resp.CreatedAt.IsZero() {

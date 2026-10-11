@@ -172,7 +172,20 @@ type pcbSilkText struct {
 	X, Y      float64 // stored BOTTOM-LEFT anchor, NOT the text center (#155)
 	// Real rendered extent from the connector (nil on older connectors). When
 	// present it supersedes any anchor/char-width/rotation estimation.
-	BBox *pcbRect
+	BBox                      *pcbRect
+	FontFamily                string   `json:"fontFamily,omitempty"`
+	LineWidth                 *float64 `json:"lineWidth,omitempty"`
+	LineWidthAvailability     string   `json:"lineWidthAvailability,omitempty"`
+	LineWidthError            string   `json:"lineWidthError,omitempty"`
+	LineWidthSource           string   `json:"lineWidthSource,omitempty"`
+	Visible                   *bool    `json:"visible,omitempty"`
+	VisibilityAvailability    string   `json:"visibilityAvailability,omitempty"`
+	VisibilitySource          string   `json:"visibilitySource,omitempty"`
+	VisibilityError           string   `json:"visibilityError,omitempty"`
+	KeyVisible                *bool    `json:"keyVisible,omitempty"`
+	KeyVisibilityAvailability string   `json:"keyVisibilityAvailability,omitempty"`
+	KeyVisibilitySource       string   `json:"keyVisibilitySource,omitempty"`
+	KeyVisibilityError        string   `json:"keyVisibilityError,omitempty"`
 }
 
 // pcbRect is a plain min/max rectangle in board mils.
@@ -2192,8 +2205,15 @@ func fetchPcbSilk(cfg *appConfig, window string) ([]pcbSilkText, error) {
 	if err != nil {
 		return nil, err
 	}
-	rawTexts, _ := mnav(res.Result, "texts").([]any)
-	var silk []pcbSilkText
+	return parsePcbSilkTexts(res.Result)
+}
+
+func parsePcbSilkTexts(result map[string]any) ([]pcbSilkText, error) {
+	rawTexts, known := result["texts"].([]any)
+	if !known {
+		return nil, fmt.Errorf("silkscreen inventory unavailable: missing texts array")
+	}
+	silk := make([]pcbSilkText, 0, len(rawTexts))
 	for _, rt := range rawTexts {
 		tm, ok := rt.(map[string]any)
 		if !ok {
@@ -2222,13 +2242,41 @@ func fetchPcbSilk(cfg *appConfig, window string) ([]pcbSilkText, error) {
 				bbox = &pcbRect{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
 			}
 		}
+		var lineWidth *float64
+		lineWidthAvailability := asString(tm["lineWidthAvailability"])
+		if width, ok := asFloatOK(tm["lineWidth"]); ok && allFinite(width) && width >= 0 && (lineWidthAvailability == "" || lineWidthAvailability == "available") {
+			lineWidth = &width
+			lineWidthAvailability = "available"
+		}
+		if lineWidth == nil {
+			lineWidthAvailability = "unknown"
+		}
+		visible, visibility := parsePcbSilkVisibility(tm, "visible", "visibilityAvailability")
+		keyVisible, keyVisibility := parsePcbSilkVisibility(tm, "keyVisible", "keyVisibilityAvailability")
 		silk = append(silk, pcbSilkText{
+			Visible: visible, VisibilityAvailability: visibility, VisibilitySource: asString(tm["visibilitySource"]), VisibilityError: asString(tm["visibilityError"]),
+			KeyVisible: keyVisible, KeyVisibilityAvailability: keyVisibility, KeyVisibilitySource: asString(tm["keyVisibilitySource"]), KeyVisibilityError: asString(tm["keyVisibilityError"]),
+			FontFamily: asString(tm["fontFamily"]), LineWidth: lineWidth, LineWidthAvailability: lineWidthAvailability, LineWidthSource: asString(tm["lineWidthSource"]), LineWidthError: asString(tm["lineWidthError"]),
 			ID: id, Kind: kind, Key: key, Text: text, Layer: int(layer), Mirror: mirror,
 			Reverse: reverse, Rotation: rotation, FontSize: fontSize, CompID: compID, CompLayer: int(compLayer), X: x, Y: y,
 			BBox: bbox,
 		})
 	}
+	if len(silk) != len(rawTexts) {
+		return silk, fmt.Errorf("silkscreen inventory contains malformed records")
+	}
 	return silk, nil
+}
+
+// Unknown visibility never becomes a guessed visible/hidden attribute. Older
+// dumps remain diagnostic input, but cannot assert rendered text membership.
+func parsePcbSilkVisibility(raw map[string]any, field, availabilityField string) (*bool, string) {
+	if raw[availabilityField] == "available" {
+		if value, ok := raw[field].(bool); ok {
+			return &value, "available"
+		}
+	}
+	return nil, "unknown"
 }
 
 // fetchAntennaContext resolves antenna-bearing components (by device name from the

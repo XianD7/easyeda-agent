@@ -73,6 +73,28 @@ export async function readResponseContext(): Promise<ResponseContext> {
 }
 
 /**
+ * Compare the two handler-boundary samples. This catches observed drift and
+ * missing identity, but cannot detect an ABA switch between the samples.
+ * The optional tab identity must be absent on both sides or equal on both.
+ */
+export function mutationContextError(before: ResponseContext, after: ResponseContext): string | undefined {
+	for (const field of ['projectUuid', 'documentUuid', 'documentType'] as const) {
+		if (typeof before[field] !== 'string' || !before[field]!.trim()
+			|| typeof after[field] !== 'string' || !after[field]!.trim()) {
+			return `handler-boundary ${field} unavailable`;
+		}
+		if (before[field] !== after[field]) return `handler-boundary ${field} changed`;
+	}
+	const beforeTab = before.tabId, afterTab = after.tabId;
+	const absent = (value: unknown): boolean => value === undefined || value === null || value === '';
+	if (absent(beforeTab) && absent(afterTab)) return undefined;
+	if (typeof beforeTab !== 'string' || !beforeTab.trim()
+		|| typeof afterTab !== 'string' || !afterTab.trim()) return 'handler-boundary tabId unavailable on one side';
+	if (beforeTab !== afterTab) return 'handler-boundary tabId changed';
+	return undefined;
+}
+
+/**
  * Read the EasyEDA client version for the `register` frame. Best-effort; falls
  * back to an empty string.
  *

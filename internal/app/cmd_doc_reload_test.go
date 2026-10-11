@@ -2,10 +2,12 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type reloadFixture struct {
@@ -14,16 +16,20 @@ type reloadFixture struct {
 	actions            []string
 	openCount          int
 	openTimeoutMs      int
+	openErrorCode      string
 	opened             bool
 	closed             bool
 	failReopen         bool
 	failClose          bool
 	noActiveAfterClose bool
+	docType            string
+	saveResult         map[string]any
+	responseChange     func(string, map[string]any)
 }
 
 func newReloadFixture(t *testing.T, failReopen bool) (*reloadFixture, *appConfig) {
 	t.Helper()
-	fx := &reloadFixture{t: t, failReopen: failReopen}
+	fx := &reloadFixture{t: t, failReopen: failReopen, docType: "pcb", saveResult: map[string]any{"saved": true}}
 	fx.srv = httptest.NewServer(http.HandlerFunc(fx.serveHTTP))
 	t.Cleanup(fx.srv.Close)
 	host, port, _ := strings.Cut(strings.TrimPrefix(fx.srv.URL, "http://"), ":")
@@ -48,11 +54,16 @@ func (fx *reloadFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	result := map[string]any{}
 	ctx := map[string]any{
 		"projectUuid": "project-1", "documentUuid": "pcb-target",
-		"documentType": "pcb", "tabId": "tab-target",
+		"documentType": fx.docType, "tabId": "tab-target",
 	}
 	ok := true
 	errorMessage := "fixture failure"
+	errorCode := "EDA_CALL_FAILED"
 	switch req.Action {
+	case "schematic.pages.list":
+		result["pages"] = []any{}
+	case "pcb.documents.list":
+		result["pcbs"] = []any{map[string]any{"uuid": "pcb-target", "name": "PCB1", "parentProjectUuid": "project-1"}}
 	case "document.current":
 		if fx.closed && !fx.opened {
 			if fx.noActiveAfterClose {
@@ -63,10 +74,11 @@ func (fx *reloadFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 				ctx["documentUuid"], ctx["documentType"], ctx["tabId"] = "other-doc", "schematic", "tab-other"
 			}
 		}
-	case "pcb.save":
-		// Successful checkpoint before close.
-	case "pcb.components.list":
-		result["count"] = 69
+	case "pcb.save", "schematic.save":
+		result = fx.saveResult
+	case "pcb.components.list", "schematic.components.list":
+		result["count"] = 1
+		result["components"] = []any{map[string]any{"primitiveId": "stable-part"}}
 	case "document.close":
 		if got := req.Payload["uuid"]; got != "pcb-target" {
 			fx.t.Errorf("close uuid=%v", got)
@@ -94,6 +106,9 @@ func (fx *reloadFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if fx.failReopen {
 			ok = false
 			errorMessage = "host open failed"
+			if fx.openErrorCode != "" {
+				errorCode = fx.openErrorCode
+			}
 		} else {
 			fx.opened = true
 			result = map[string]any{"tabId": "tab-reopened", "ready": true}
@@ -101,9 +116,15 @@ func (fx *reloadFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		fx.t.Errorf("unexpected action %s", req.Action)
 	}
-	response := map[string]any{"ok": ok, "result": result, "context": ctx}
+	if req.Action == "document.current" && ok {
+		result = map[string]any{"uuid": ctx["documentUuid"], "documentType": ctx["documentType"], "tabId": ctx["tabId"], "parentProjectUuid": ctx["projectUuid"]}
+	}
+	response := map[string]any{"id": fmt.Sprintf("req-%d", len(fx.actions)), "windowId": "w1", "createdAt": time.Now().UTC().Format(time.RFC3339Nano), "ok": ok, "result": result, "context": ctx}
 	if !ok {
-		response["error"] = map[string]any{"code": "EDA_CALL_FAILED", "message": errorMessage}
+		response["error"] = map[string]any{"code": errorCode, "message": errorMessage}
+	}
+	if fx.responseChange != nil {
+		fx.responseChange(req.Action, response)
 	}
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -131,10 +152,10 @@ func TestReloadDocumentPreservesTargetSplitAndWaitsForClose(t *testing.T) {
 	if fx.openCount != 1 {
 		t.Fatalf("document.open count=%d, want exactly one", fx.openCount)
 	}
-	if fx.openTimeoutMs != 15_000 {
-		t.Fatalf("document.open timeoutMs=%d, want bounded 15000", fx.openTimeoutMs)
+	if fx.openTimeoutMs != 32_000 {
+		t.Fatalf("document.open timeoutMs=%d, want bounded 32000 (30s connector budget plus grace)", fx.openTimeoutMs)
 	}
-	want := []string{"document.current", "pcb.save", "document.close", "document.current", "document.open", "document.current", "pcb.components.list", "pcb.components.list"}
+	want := []string{"document.current", "pcb.save", "document.close", "document.current", "document.open", "document.current", "pcb.components.list", "document.current", "pcb.components.list", "document.current"}
 	if strings.Join(fx.actions, ",") != strings.Join(want, ",") {
 		t.Fatalf("actions=%v, want %v", fx.actions, want)
 	}
@@ -162,9 +183,53 @@ func TestReloadDocumentOpenFailureDoesNotRetryAndReportsRecovery(t *testing.T) {
 		t.Fatalf("document.open count=%d, want exactly one", fx.openCount)
 	}
 	message := err.Error()
-	for _, text := range []string{"target tab is closed", "automatic retry was suppressed", "project tree"} {
+	for _, text := range []string{"target tab was closed", "reopen completion is unconfirmed", "automatic retry was suppressed", "retain this failure", "typed connection/context evidence"} {
 		if !strings.Contains(message, text) {
 			t.Fatalf("error missing %q: %s", text, message)
 		}
+	}
+	for _, text := range []string{"project tree", "refreshing the editor"} {
+		if strings.Contains(message, text) {
+			t.Fatalf("error suggested a GUI recovery: %s", message)
+		}
+	}
+}
+
+func TestReloadDocumentUnconfirmedSaveDoesNotCloseOrReopen(t *testing.T) {
+	for _, docType := range []string{"pcb", "schematic"} {
+		for name, result := range map[string]map[string]any{
+			"false":       {"saved": false},
+			"missing":     {},
+			"null":        {"saved": nil},
+			"string true": {"saved": "true"},
+		} {
+			t.Run(docType+"/"+name, func(t *testing.T) {
+				fx, cfg := newReloadFixture(t, false)
+				fx.docType, fx.saveResult = docType, result
+				gotType, err := reloadDocumentByUUID(cfg, "w1", "pcb-target")
+				if err == nil || !strings.Contains(err.Error(), "saved:true required") || gotType != docType {
+					t.Fatalf("type=%s err=%v", gotType, err)
+				}
+				if fx.closed || fx.openCount != 0 {
+					t.Fatalf("unconfirmed save closed=%t openCount=%d", fx.closed, fx.openCount)
+				}
+				want := "document.current," + docType + ".save"
+				if strings.Join(fx.actions, ",") != want {
+					t.Fatalf("actions=%v, want only %s", fx.actions, want)
+				}
+			})
+		}
+	}
+}
+
+func TestReloadDocumentQueueBlockedDoesNotResubmitOpen(t *testing.T) {
+	fx, cfg := newReloadFixture(t, true)
+	fx.openErrorCode = "QUEUE_BLOCKED"
+	_, err := reloadDocumentByUUID(cfg, "w1", "pcb-target")
+	if err == nil || fx.openCount != 1 {
+		t.Fatalf("queue-blocked reopen must fail after one request, opens=%d err=%v", fx.openCount, err)
+	}
+	if fx.actions[len(fx.actions)-1] != "document.open" {
+		t.Fatalf("failed reopen must not claim recovery or issue further requests: %v", fx.actions)
 	}
 }

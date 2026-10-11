@@ -1,4 +1,5 @@
 import { projectOpen, projectExport } from './project-transfer';
+import { moveSchematicAttribute } from './schematic-attribute-move';
 import { documentSourceGet, documentSourceRoundtrip } from './document-source';
 import { listSystemCommonLibrary } from './common-library';
 import { silkSlotFacts, validSilkRect, type SilkLabel } from './pcb-silk-placement';
@@ -9397,6 +9398,51 @@ const pcbSilkAlign: Handler = async (payload) => {
 // parent component's side (TOP=1 / BOTTOM=2) so the check can verify a designator
 // sits on the same side as its footprint.
 const PCB_TOP_SILK = 3, PCB_BOTTOM_SILK = 4;
+// A missing or throwing getter is not a measured zero/default stroke.
+function pcbSilkLineWidth(primitive: { getState_LineWidth?: () => number }): Record<string, unknown> {
+	if (typeof primitive.getState_LineWidth !== 'function') {
+		return { lineWidthAvailability: 'unknown', lineWidthError: 'missing-getter' };
+	}
+	try {
+		const width = primitive.getState_LineWidth();
+		if (typeof width !== 'number' || !Number.isFinite(width) || width < 0) {
+			return { lineWidthAvailability: 'unknown', lineWidthSource: 'getState_LineWidth', lineWidthError: 'invalid-result' };
+		}
+		return { lineWidth: width, lineWidthAvailability: 'available', lineWidthSource: 'getState_LineWidth' };
+	}
+	catch (err) {
+		return { lineWidthAvailability: 'unknown', lineWidthSource: 'getState_LineWidth', lineWidthError: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+// Primitive attribute value visibility is independent of temporary layer focus.
+// Free strings have no attribute-visibility switch in the official SDK.
+function pcbSilkAttributeVisibility(primitive: { getState_ValueVisible?: () => boolean; getState_KeyVisible?: () => boolean }): Record<string, unknown> {
+ const result: Record<string, unknown> = {};
+ for (const [field, getter, prefix] of [
+  ['valueVisible', 'getState_ValueVisible', 'visibility'],
+  ['keyVisible', 'getState_KeyVisible', 'keyVisibility'],
+ ] as const) {
+  if (typeof primitive[getter] !== 'function') {
+   result[`${prefix}Availability`] = 'unknown'; result[`${prefix}Error`] = 'missing-getter'; continue;
+  }
+  result[`${prefix}Source`] = getter;
+  try {
+   const value = primitive[getter]!();
+   if (typeof value !== 'boolean') {
+    result[`${prefix}Availability`] = 'unknown'; result[`${prefix}Error`] = 'invalid-result'; continue;
+   }
+   result[field] = value;
+   if (field === 'valueVisible') result.visible = value;
+   result[`${prefix}Availability`] = 'available';
+  }
+  catch (err) {
+   result[`${prefix}Availability`] = 'unknown'; result[`${prefix}Error`] = err instanceof Error ? err.message : String(err);
+  }
+ }
+ return result;
+}
+
 const pcbSilkList: Handler = async () => {
 	const isSilk = (l: number) => l === PCB_TOP_SILK || l === PCB_BOTTOM_SILK;
 
@@ -9433,6 +9479,8 @@ const pcbSilkList: Handler = async () => {
 			const pid = a.getState_ParentPrimitiveId?.() ?? '';
 			texts.push({
 				primitiveId: a.getState_PrimitiveId(),
+				...pcbSilkLineWidth(a),
+				...pcbSilkAttributeVisibility(a),
 				bbox: await silkBBox(a.getState_PrimitiveId()),
 				kind: 'attribute',
 				text: a.getState_Value?.() ?? '',
@@ -9463,6 +9511,8 @@ const pcbSilkList: Handler = async () => {
 			}
 			texts.push({
 				primitiveId: s.getState_PrimitiveId(),
+				...pcbSilkLineWidth(s),
+				visible: true, visibilityAvailability: 'available', visibilitySource: 'primitive-string',
 				bbox: await silkBBox(s.getState_PrimitiveId()),
 				kind: 'string',
 				text: s.getState_Text?.() ?? '',
@@ -15008,6 +15058,7 @@ const HANDLERS: Record<string, Handler> = {
 	'schematic.titleblock.modify': schematicTitleBlockModify,
 	'schematic.components.list': schematicComponentsList,
 	'schematic.attribute.inspect': schematicAttributeInspect,
+	'schematic.attribute.move': payload => moveSchematicAttribute(payload, attribute => schAttributeStateRecord(attribute, readCurrentNativePageAttributes)),
 	'schematic.designators.list': schematicDesignatorsList,
 	'schematic.component.place': schematicComponentPlace,
 	'schematic.component.modify': schematicComponentModify,

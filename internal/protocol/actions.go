@@ -299,6 +299,16 @@ func AllActions() []ActionSpec {
 			Outputs:     []string{"primitiveId", "identityBefore", "identityAfter", "getAll", "get", "reset"},
 		},
 		{
+			Name:        "schematic.attribute.move",
+			Domain:      DomainSchematic,
+			Phase:       1,
+			Mutates:     true,
+			NeedsWindow: true,
+			Description: "Move one existing placed part Name/Designator attribute using only official sch_PrimitiveAttribute.modify(id,{x,y}). Bind exact project/document and complete original native attribute state; refuse drift before writing. Independently reread coordinates and preserve every other field including raw formula text, parent, visibility and style. Missing/partial readback fails with attempted/before/after evidence; never retry automatically. This is not visual-overlap or persistence acceptance.",
+			Inputs:      []string{"projectUuid", "documentUuid", "primitiveId", "expected (complete native attribute record from pagePrimitives.attributes)", "x (finite raw)", "y (finite raw, Y-up)"},
+			Outputs:     []string{"verified", "partial", "preserved", "attempted", "moved", "before", "after", "requested", "identityBefore", "identityAfter", "errors"},
+		},
+		{
 			Name:        "schematic.designators.list",
 			Domain:      DomainSchematic,
 			Phase:       1,

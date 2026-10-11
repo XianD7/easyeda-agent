@@ -43,19 +43,28 @@ func TestResolveStageSnapshotSHAFallsBackToPersistedArtifact(t *testing.T) {
 	}
 }
 
-func TestResolveStageSnapshotSHAPrefersConnectorEvidence(t *testing.T) {
-	got, source, err := resolveStageSnapshotSHA("  connector-sha  ", "/does/not/exist")
-	if err != nil {
+func TestResolveStageSnapshotSHAVerifiesConnectorEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.png")
+	raw := []byte("hash fixture")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got != "connector-sha" || source != "connector" {
-		t.Fatalf("unexpected connector hash: got=%q source=%q", got, source)
+	want := sha256Hex(raw)
+	got, source, err := resolveStageSnapshotSHA(" "+want+" ", path)
+	if err != nil || got != want || source != "connector+cli-artifact" {
+		t.Fatalf("hash=%s source=%s err=%v", got, source, err)
+	}
+	if _, _, err := resolveStageSnapshotSHA("incorrect", path); err == nil {
+		t.Fatal("mismatched hash accepted")
+	}
+	if _, _, err := resolveStageSnapshotSHA(want, "/does/not/exist"); err == nil {
+		t.Fatal("missing file accepted based on reported hash")
 	}
 }
 
 func TestResolveStageSnapshotSHAReportsUnavailableWithoutArtifact(t *testing.T) {
 	got, source, err := resolveStageSnapshotSHA("", "")
-	if err != nil || got != "" || source != "unavailable" {
+	if err == nil || got != "" || source != "unavailable" {
 		t.Fatalf("unexpected unavailable result: got=%q source=%q err=%v", got, source, err)
 	}
 }
