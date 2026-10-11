@@ -72,6 +72,24 @@ The connector sends `ping` periodically; the daemon answers `pong` echoing the `
 
 Use the response envelope defined in [protocol.md](protocol.md).
 
+`runAction` samples the official project and active document immediately before
+and after the FIFO handler. It sends additive `mutationContext`,
+`mutationContextAvailable`, and `mutationContextError` alongside the diagnostic
+`context`. Certification requires matching nonempty project/document/type and
+symmetrically present, matching optional tab identities. A handler's own target
+readback must also agree; an explicit unknown target cannot be replaced by an
+ambient sample. Missing identity or drift sets availability to false without
+changing the native result or claiming rollback. Boundary sampling does not
+detect ABA switches during the handler.
+
+The transport must preserve explicit false on the wire. A daemon must not use
+post-action `context` or missing legacy certification as a mutation/save target.
+For target-bound autosave, `schematic.save` / `pcb.save` check `expectedContext`
+inside the FIFO before calling the SDK. Successful native save results remain
+visible even when identity certification is unavailable; only certified saves
+cancel the matching older timer. Warnings, health, and audit retain unavailable
+identity evidence.
+
 ## Official API Mapping for Phase 1
 
 The connector will map actions to these EasyEDA APIs first:

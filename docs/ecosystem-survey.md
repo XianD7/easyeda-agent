@@ -696,6 +696,11 @@ Schema 记录跳过验证；DOCHEAD 分支设置文档类型后立即 `continue`
 
 ### 12.6 Web 适配验证边界
 
+已有非空 PCB 的只读 getter 已补测：文档源码含 COMPONENT 与 PAD_NET，但实例封装
+以 UUID 引用，未内嵌 PAD 几何或完整封装库。该结果进一步要求文件后端显式采集库依赖；
+不能把单页 document source 当作自含 eprj3 工程包。下一优先项是原生网表读取与已有工程
+对账，能力状态见 [FEATURES](FEATURES.md#roadmap-not-yet-built)，PCB setter 仍未验证。
+
 当前目标宿主是 Web EDA。官方 folder `.eprj3` 的双向同步适用于客户端半离线/全离线模式；
 不能从文件生成成功推导出 Web 工程导入可用。另一个候选接入点是官方 Beta
 `sys_FileManager.getDocumentSource()/setDocumentSource(source)`，类型定义声明 getter 返回

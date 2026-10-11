@@ -22,7 +22,29 @@
 - Footprint builds accept official per-side solder/paste mask expansion, preserve explicit zero, verify fresh primitive identities and apertures, and require boolean save success.
 - Schematic footprint rebinding resolves sparse library search results against native placed identities and a same-document source association before mutation.
 - CLI and Apply stop on unverified footprint builds/rebinds, retaining partial evidence without retry or dependent writes.
-- Local development candidate; this entry does not certify manufacturing or full design E2E.
+- Includes the previously verified dev.6 back-silkscreen mirror fix. Local development candidate; this entry does not certify manufacturing or full design E2E.
+
+## [1.9.1-dev.5] - 2026-10-07
+
+- Reject unsupported region/pour/fill boundary widths before creating any primitive; the supported host boundary width is 0.2mil.
+- Validate explicit pour insertion order against identity-bound native source, await the public instance setter once, and verify the new order and complete prior-pour fields instead of trusting the SDK priority getter.
+- Include the previously offline-verified antenna keepout coverage and accountable partial-write handling.
+- Local development candidate only; targeted verification does not certify full B00–B10 or design E2E.
+
+## [1.9.1-dev.4] - 2026-10-05
+
+- Reject successful layout verdicts when pad geometry or component inventory is incomplete, including live-report finalization.
+- Separate diagnostic response context from attested mutation/save identity; a missing or drifting identity does not arm autosave or cancel a different document timer.
+- Preserve ambiguous pin-net evidence as unavailable connectivity rather than synthesizing an open pin.
+- Local development candidate. Offline and targeted Web verification have separate boundaries; full design E2E remains unverified.
+
+## [1.9.1-dev.3] - 2026-10-05
+
+- Preserve PCB pad shape, rotation, capture availability/errors, native unique IDs and footprint identities through snapshots. Distinguish known-empty inventories, incomplete reads, unsupported geometry and legacy extent approximations.
+- Fix square-pad corner overlap detection; expose unverified geometry in layout/check reports and reject incomplete explicit score/strict checks. Keep ordinary diagnostics available.
+- Propagate native PCB DRC and save failures through CLI results and exit codes; keep SCH INFO-only results non-blocking. Reload requires boolean saved:true before closing.
+- Bind debounced autosave to the mutation response's project/document identity, verify that identity inside the connector FIFO, retain newer generations during timer races and expose background save outcomes in health/audit.
+- Local development candidate only. Offline regression and targeted Web verification are tracked separately; full ESP32 design E2E, polygon copper support, unit-doubt diagnosis and eprj3 dependency closure are not certified by this change.
 
 ## [1.9.1-dev.2] - 2026-10-04
 

@@ -57,10 +57,40 @@ Skill 目录。源码位置不改变发布包内的 `easyeda-agent/` 根目录�
 上下文中的完整组件记录连续稳定，输出组件清单指纹与观测请求。它不导航，不表示先前超时的
 handler 已完成，也不证明保存或重载成功；恢复观测、失败命令与后续正式验收必须分开记录。
 
-
 **原理图属性移位**只更改已有器件属性的 X/Y。输入绑定工程、图页、属性 ID 与完整原状态；
 写前拒绝状态漂移，写后独立回读并逐字段确认文字、可见性、父对象及样式未变。它不移动
 器件或导线，也不以坐标写入成功证明图面无重叠；失败保留已尝试 ID 和新读状态，不自动重试。
+
+**采集覆盖与几何覆盖**分别说明“对象库存是否完整读到”和“读到的形状是否能参与当前算法”。
+PCB 的 `availability` 区分 `not-requested`、`available` 与 `unavailable`；只有库存 getter
+成功返回数组时，空数组才是已知为空。单个焊盘失败仍保留其他焊盘，并保留失败对象与错误。
+原始 `shape` / `specialPad`、角度和 native `uniqueId` 是快照事实；解析器不支持的形状是
+`unsupported`，getter 缺失或异常是 `unknown`，不能混为“无焊盘”。旧宽高快照只能提供
+显式的近似包络。`coverage.complete:false` 不阻止普通诊断或设计动作，但不能作为完整
+几何验收通过的证据，显式评分门槛与严格检查必须报告未验证项。
+
+原理图 native netlist 不可用或器件 `netAmbiguous:true` 时，普通 connectivity 转换拒绝把
+缺测或网名归属歧义当成未连接。专用
+preserve/reuse-unwired 编译路径可使用其已有的完整零绘图证明：活动页的完整器件/引脚
+库存、全部物理引脚 `noConnected:false`、导线/网络标记/端口/总线/短接符号均为零，且无未知
+组件类型。仅在该证明成立时，从副本派生 known-unconnected 基线，保留原始缺测快照、
+哈希与证明来源。此例外不适用于普通设计检查、连通路径或写后验收。
+
+**保存确认与保存目标**是两个独立事实。成功保存要求真实布尔 `saved:true`；外层调用成功
+不证明落盘。响应 `context` 是 handler 结束时的活动页诊断，不直接证明刚才写入的文档。
+连接器在 handler 前后采集身份，只有非空 project/doc/type 一致、可选 tab 身份对称一致时
+才返回 `mutationContextAvailable:true` 和独立 `mutationContext`。漂移或缺测返回明确 false、
+原因和前置观测；不改写 action 成功结果，也不声称已回退。两次采样只证明端点一致，不能
+证明期间没有切到其他页再切回（ABA），也不证明落盘。
+
+后台 autosave 仅使用上述认证身份，按文档防抖，并在连接器保存执行前检查期望身份。
+`document.source.roundtrip` 是已知的文档域写动作，由认证身份的文档类型选择 schematic/PCB save；
+dry-run 不触发保存，其他 project/debug/view 泛域动作不据活动页推断保存目标。探针仍须单独
+执行 typed save 并保留保存重载证据，后台安全网不能替代这一检查点。
+显式保存成功也只能按认证的保存归属取消该文档的旧 timer；新编辑的 timer 继续保留。
+旧 connector 缺少身份认证、漂移或身份缺测时不启动 autosave、不取消其他文档 timer，
+并将原因保留在响应 warning、`health.autosave` 与审计中；原生 `saved` 结果仍保留。
+这些状态不能代替明确检查点的保存、重载与对账。
 
 **开发验证场景**是一项用户可观察能力的可重现验收任务，保存问题、开始状态、参数、独立
 验收要求、操作步骤、证据与未完成项。例如“保持已有组内布局，整体移动五个器件，再保存
@@ -85,6 +115,16 @@ The read-only `lib common list` adapter enumerates the public System catalogue;
 it does not read Personal settings or the panel's current selection. Command,
 source compatibility and live verification boundaries are maintained in the
 [Common Library reference](../.agents/skills/easyeda-agent/references/part-selection.md#common-library-devices-常用库).
+
+## PCB pour order
+
+**覆铜原生顺序（native order）**是 `.epcb2` 的 `POUR.order`，按层独立排序，0 为最高。
+它与 SDK 的 `getState_PourPriority()` 回读不是同一可靠观测：Web 4.1.60 会把合法的
+order 0 回显为该层的下一 order；创建参数的正数又是同层插入位置，可能被钳制。
+显式 `pcb pour --priority` 因此使用连续 0..N−1 的既有原生顺序作为基线，新增位置
+仅允许 0..N，并在创建后显式等待公开 setter 的 `done()`，核对新对象原生 order、
+同层既有对象的预期顺移及其他层不变。该顺序证明不证明异网重叠处的实际铜归属，
+后者仍需材料化铺铜和 DRC。
 
 ## PCB reference pictures and manufacturing artwork
 
@@ -248,6 +288,13 @@ footprint anchor、bbox、pads 与板框，有限枚举若干完整候选。算�
 并重算。`offline-verified` 只证明计算；执行后保存、真实重载和官方回读才构成
 `live-verified`。现有评分、stage 和总分不决定候选能否执行。
 
+**天线禁铜覆盖证明**把所需净空与已放置区域分开：所需区域来自元件真实 bbox/pads、
+器件资料及可重算参数；实际区域来自 fresh region polygon、完整规则与铜层。
+覆盖要求区域完整包含所需净空，且每种被禁止的铜与相应层都有证据；任一规则或 bbox
+相交不是证明。缺失几何、层、pad 或不支持的轮廓保持不可验证。离散芯片天线的馈线允许
+进入是显式规则例外，不把它扩展到模块天线。操作与默认启发式见公开 Skill 的
+[天线禁铜区域](../.agents/skills/easyeda-agent/references/pcb.md#天线禁铜区域)。
+
 带铜 schema-v2 候选若会触发 `pour-rebuild`，必须把受影响的既有材料化铺铜写成显式
 `affectedBaselinePours`：记录 fresh before 的 boundary/materialized primitiveId、net、layer 与
 从器件移动前后、routes、regions、pours、vias 推导的 `impactEnvelope`。这是一条局部差异白名单：
@@ -337,6 +384,11 @@ EasyEDA Pro 3.2.186 的隔离页数据验证（2026-09-15）表明：严格位�
 `pin.connectionState:"unconnected"` 表示已确认无网络、无 NC 的悬空物理脚，
 用于无损重建尚未完成的原理图。官方快照必须明确返回 `net:""` 和
 `noConnected:false` 才能自动生成该状态；缺少字段不算证据。
+保留实例的 Compose 有一个专用来源：完整当前页库存证明无导线、总线、网络标记、
+短接符号或其他绘图对象，所有物理脚可读且 `noConnected:false`，可从原始快照的
+副本派生该状态。派生来源记录原始快照哈希和 `complete-active-page-zero-drawing`
+判据；原生网表缺测、错误及 `net:null` 保持在原始证据中，不改称网表采集成功。
+普通连接模型导出及连接检查点仍拒绝明确的 pin-net 缺测。
 它与网络连接、明确 NC 互斥；重建保留空脚并继续报告 `unconnected-pin` 警告，
 不会把数据采集完整解释成电气设计合格。未声明状态的无网非 NC 引脚仍属于未知。
 
@@ -720,8 +772,14 @@ zone 间净距和页边净距；相邻框只加一次间距，笔画半宽另计
 可用 `paperlessRowBreaks` 指定换行索引，将完整模块按顺序排成多行；
 它不在宿主创建纸张，也不把虚拟包络称为实测纸张。写前回读要求目标页确实为 0 个
 sheet，写后仍逐项核对器件身份、线树和 NC。完全未接线的已绑定器件可直接保留实例
-并接线；不能借这个条件清除已有导线。无图框时严格纸张边界检查不适用，其余电气
+并接线；已有图面使用同一个受保护的显式 drawing-only 删除及剩余 inventory 核对，不能借
+未接线条件清除已有导线。无图框时严格纸张边界检查不适用，其余电气
 与几何检查照常执行。
+
+**保留实例的连接修改** 由 `compose --preserve-instances --connectivity-edits` 单独表达。
+逐脚审计文件绑定完整原始回读与 Compose 源的字节哈希，只授权精确列出的网络/NC 差分；
+它不豁免同页、完整器件集合、库身份、原生实例属性、pinName 与引脚身份守卫。漏列、冗余或
+错误旧值拒绝编译；旧 NC 的解除与新 NC 的设置后先回读，再创建导线。普通保全模式仍只改布局。
 
 原理图允许导线内部的 X 形相交，不产生连接点；不同网的端点接触、T 接触、共线重叠
 仍拒绝。符号本体、位号、引脚出口也仍需避让。直连指真实导线路径，可有转折与交叉，

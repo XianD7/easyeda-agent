@@ -81,6 +81,16 @@ CLI 完整读取单次 action 的 HTTP 响应，最多 32 MiB；health 清单另
 `audit export --playbook` 可从审计生成复现用队列；它可能包含 clear/delete 等操作，
 也可能引用在录制区间外创建的 ID。先检查生成内容和 raw-id 警告，不能将录制物当作幂等模板。
 
+## 显式保存与自动保存
+
+保存和 `doc reload` 要求布尔 `saved:true`；`saved:false`、缺失或其他类型均失败，
+reload 在关闭前停止。显式保存、真实重载和新回读才构成持久化证据。
+后台 autosave 只接受 `mutationContextAvailable:true` 的独立身份；响应 `context` 仅供诊断。
+已知 typed `document.source.roundtrip` 按认证文档类型选择保存；dry-run 不 arm，其他泛域动作不推断目标。
+connector 在 handler 前后核对 project/doc/type 和可选 tab；漂移、缺测或旧版本缺少认证时
+不启用自动保存，并保留 warning、`health.autosave` 与审计原因。前后两次采样不覆盖 ABA 切页。
+显式保存只按认证归属取消旧 timer，不取消请求之后的新编辑；探针仍须显式保存。
+
 ## 常用原理图适配器边界
 
 | CLI / action | 必要边界 |
@@ -99,7 +109,7 @@ CLI 完整读取单次 action 的 HTTP 响应，最多 32 MiB；health 清单另
 | `sch export-image` | 文档渲染 SVG/PNG/PDF；`--ids` 导局部，不依赖视口截图 |
 | `sch image create/list/modify`，`schematic.image.create/list/modify` | 非电气 PNG/JPEG/SVG；raw 单位、y-UP、源左上角 anchor；list 只读几何，modify 不替换内容，删除走 `schematic.primitives.delete`。历史现场验证仅参考图片，见 [原理图](schematic.md) |
 | `sch read/check/bridge-check/drc/gate` | 用法与判读见 [schematic.md](schematic.md)；SDK DRC 聚合值不代表 UI 所有警告消失 |
-| `sch save` | 通过阶段验证后保存并确认 `saved:true`，不能只依赖防抖 autosave |
+| `sch save` | 稳定检查点显式保存并确认布尔 `saved:true`；失败时也可保存已知状态，但不等于验证通过 |
 
 `replace` 保留 sch↔PCB 的 `uniqueId`，器件型号/供应商字段随新 device；`--keep-properties`
 才保留旧自定义属性。`rebind` 对不可写系统库可克隆到个人库；失败恢复仍需看实际回读。
