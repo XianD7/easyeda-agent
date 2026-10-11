@@ -471,43 +471,34 @@ func TestPcbCheck_SilkReversed(t *testing.T) {
 	}
 }
 
-// Antenna keep-out: an antenna module with no overlapping no-copper region is
-// flagged; a covering no-copper region clears it; a non-copper region does not.
+// Antenna coverage is complete polygon/rule/layer containment, never overlap.
 func TestPcbCheck_AntennaKeepout(t *testing.T) {
-	ants := []pcbAntComp{{Designator: "U1", Device: "ESP32-S3-WROOM-1", BBox: &layoutBBox{MinX: 0, MinY: 0, MaxX: 100, MaxY: 200}}}
-	bb := &layoutBBox{MinX: 0, MinY: 150, MaxX: 100, MaxY: 260} // overlaps the antenna
-	// no keep-out at all → flagged.
-	if got := len(findAntennaKeepout(ants, nil, 4)); got != 1 {
-		t.Fatalf("no keep-out = %d, want 1", got)
+	rect := [4]float64{0, 150, 100, 260}
+	ants := []pcbAntComp{{Designator: "U1", Device: "ESP32-S3-WROOM-1", RequiredRect: &rect, RequiredRules: []int{5, 6, 7}}}
+	rules := []int{5, 6, 7}
+	for _, tc := range []struct {
+		name    string
+		layers  int
+		regions []pcbKeepRegion
+		want    int
+	}{
+		{"none", 4, nil, 1},
+		{"top only", 4, []pcbKeepRegion{antennaTestRegion(1, []int{5, 6, 7, 8}, rect)}, 1},
+		{"top bottom and inner-plane cannot prove inner signals", 4, []pcbKeepRegion{antennaTestRegion(1, []int{5, 6, 7, 8}, rect), antennaTestRegion(2, rules, rect)}, 1},
+		{"two layer each side", 2, []pcbKeepRegion{antennaTestRegion(1, rules, rect), antennaTestRegion(2, rules, rect)}, 0},
+		{"four layer MULTI without inner rule", 4, []pcbKeepRegion{antennaTestRegion(12, rules, rect)}, 1},
+		{"four layer complete MULTI", 4, []pcbKeepRegion{antennaTestRegion(12, []int{5, 6, 7, 8}, rect)}, 0},
+		{"two layer MULTI", 2, []pcbKeepRegion{antennaTestRegion(12, rules, rect)}, 0},
+		{"only overlap", 2, []pcbKeepRegion{antennaTestRegion(12, rules, [4]float64{0, 150, 100, 180})}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := len(findAntennaKeepout(ants, tc.regions, tc.layers)); got != tc.want {
+				t.Fatalf("findings=%d want=%d", got, tc.want)
+			}
+		})
 	}
-	// TOP-only keep-out on a 4-layer board → still flagged (bottom + inner missing) — the user's bug.
-	topOnly := []pcbKeepRegion{{BBox: bb, Layer: 1, NoOuterCopper: true, NoInnerElectrical: true}}
-	if got := len(findAntennaKeepout(ants, topOnly, 4)); got != 1 {
-		t.Fatalf("top-only keep-out (4L) = %d, want 1 (bottom missing)", got)
-	}
-	// TOP (with inner) + BOTTOM keep-out on 4-layer → clear.
-	full := []pcbKeepRegion{
-		{BBox: bb, Layer: 1, NoOuterCopper: true, NoInnerElectrical: true},
-		{BBox: bb, Layer: 2, NoOuterCopper: true},
-	}
-	if got := len(findAntennaKeepout(ants, full, 4)); got != 0 {
-		t.Fatalf("top+bottom+inner keep-out (4L) = %d, want 0", got)
-	}
-	// On a 2-layer board, top+bottom is enough (no inner requirement).
-	twoLayer := []pcbKeepRegion{
-		{BBox: bb, Layer: 1, NoOuterCopper: true},
-		{BBox: bb, Layer: 2, NoOuterCopper: true},
-	}
-	if got := len(findAntennaKeepout(ants, twoLayer, 2)); got != 0 {
-		t.Fatalf("top+bottom keep-out (2L) = %d, want 0", got)
-	}
-	// A SINGLE MULTI-layer (12/多层) no-copper region covers top+bottom+inner at once → clear on 4L.
-	multi := []pcbKeepRegion{{BBox: bb, Layer: pcbLayerMulti, NoOuterCopper: true}}
-	if got := len(findAntennaKeepout(ants, multi, 4)); got != 0 {
-		t.Fatalf("multi-layer keep-out (4L) = %d, want 0 (12 covers all layers)", got)
-	}
-	if got := len(findAntennaKeepout(ants, multi, 2)); got != 0 {
-		t.Fatalf("multi-layer keep-out (2L) = %d, want 0", got)
+	if got := findAntennaKeepout([]pcbAntComp{{Designator: "ANT1", Incomplete: "bbox unavailable"}}, nil, 2); len(got) != 1 || got[0].Type != "antenna-keepout-incomplete" {
+		t.Fatalf("missing geometry must be explicit incomplete: %+v", got)
 	}
 	if !isAntennaDevice("ESP32-S3-WROOM-1", "U1") || !isAntennaDevice("", "ANT1") || isAntennaDevice("0402WGF", "R2") {
 		t.Fatal("isAntennaDevice classification wrong")

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/zhoushoujianwork/easyeda-agent/internal/blocks"
 	"github.com/zhoushoujianwork/easyeda-agent/internal/pcb/svgimport"
 	"github.com/zhoushoujianwork/easyeda-agent/internal/spec"
 )
@@ -50,6 +49,19 @@ func checkPcbStackupResponse(data []byte) error {
 	}
 	if !response.OK || !response.Result.Verified || response.Result.Partial {
 		return fmt.Errorf("PCB stackup was not fully applied; inspect written and actual layer fields before retrying")
+	}
+	return nil
+}
+
+// PCB DRC's native verdict is independent of a successful action round-trip.
+// An absent or malformed verdict cannot prove that the board passed.
+func pcbDrcVerdictError(result map[string]any) error {
+	passed, known := result["passed"].(bool)
+	if !known {
+		return fmt.Errorf("pcb drc: native verdict unavailable (boolean passed required); preserve the returned result")
+	}
+	if !passed {
+		return fmt.Errorf("pcb drc: native verdict failed; inspect the returned violations")
 	}
 	return nil
 }
@@ -464,6 +476,9 @@ func newPcbCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 			Short: "Run PCB DRC and return normalized violations",
 			Long: `Run PCB DRC on the active PCB and return normalized {passed, violations}.
 
+The native boolean passed verdict controls the exit status in raw and JSON modes.
+passed:false or an unavailable verdict returns nonzero; JSON preserves nativeResult.
+
 This is the PCB counterpart to ` + "`easyeda sch drc`" + ` (schematic DRC). The two are
 distinct subcommands and route to different documents automatically — pcb.* targets
 the project's PCB window, schematic.* targets the schematic window — so they never
@@ -474,7 +489,12 @@ cross-fire. The PCB must be the active/foreground document.
 REAL mil (the raw leaves store mil/10). --timeout bounds the wait; a background /
 occluded EasyEDA window never finishes DRC's canvas recompute, so on timeout bring
 the window to the FOREGROUND and run once — do NOT retry in a loop (each retry
-piles another recompute onto the webview and makes it worse).`,
+piles another recompute onto the webview and makes it worse).
+
+Both output modes exit non-zero when the native verdict is false or unavailable,
+with the result preserved on stdout. --json also retains the original result in
+nativeResult so unrecognized native detail is not silently discarded. Action or
+response-shape failures preserve the original response instead of a flat report.`,
 			Args: cobra.NoArgs,
 			Example: `  easyeda pcb drc
   easyeda pcb drc --strict
@@ -486,21 +506,40 @@ piles another recompute onto the webview and makes it worse).`,
 					payload = map[string]any{"strict": true}
 				}
 				timeout := time.Duration(timeoutSec) * time.Second
-				if !flatJSON {
-					err := dispatchTimed(cfg, "pcb.drc.check", window, payload, timeout, stdout, stderr)
-					return drcTimeoutHint(err, stderr)
+				var response bytes.Buffer
+				err := dispatchTimed(cfg, "pcb.drc.check", window, payload, timeout, &response, stderr)
+				if !flatJSON || err != nil {
+					if _, writeErr := stdout.Write(response.Bytes()); writeErr != nil {
+						return writeErr
+					}
 				}
-				res, err := requestActionTimed(cfg, "pcb.drc.check", window, payload, timeout)
 				if err != nil {
 					return drcTimeoutHint(err, stderr)
 				}
-				report := flattenDrcResult(res.Result)
+				var envelope struct {
+					Result map[string]any `json:"result"`
+				}
+				if err := json.Unmarshal(response.Bytes(), &envelope); err != nil {
+					if flatJSON {
+						if _, writeErr := stdout.Write(response.Bytes()); writeErr != nil {
+							return writeErr
+						}
+					}
+					return fmt.Errorf("decode PCB DRC verdict: %w", err)
+				}
+				if !flatJSON {
+					return pcbDrcVerdictError(envelope.Result)
+				}
+				report := struct {
+					drcFlatReport
+					NativeResult map[string]any `json:"nativeResult"`
+				}{flattenDrcResult(envelope.Result), envelope.Result}
 				out, err := json.MarshalIndent(report, "", "  ")
 				if err != nil {
 					return err
 				}
 				fmt.Fprintln(stdout, string(out))
-				return nil
+				return pcbDrcVerdictError(envelope.Result)
 			},
 		}
 		c.Flags().BoolVar(&strict, "strict", false, "treat warnings as errors")
@@ -2011,8 +2050,8 @@ plane. fill = solid (default) | grid | grid45.`,
 		c.Flags().IntVar(&layer, "layer", 1, "copper layer id (TOP=1, BOTTOM=2; inner via 'easyeda pcb layers')")
 		c.Flags().StringVar(&fill, "fill", "", "fill style: solid (default) | grid | grid45")
 		c.Flags().StringVar(&name, "name", "", "pour name")
-		c.Flags().IntVar(&priority, "priority", 0, "pour priority (higher wins overlaps)")
-		c.Flags().Float64Var(&width, "width", 0, "pour border/track width (mil)")
+		c.Flags().IntVar(&priority, "priority", 0, "native per-layer insertion order (0 highest; existing orders must be contiguous; valid 0..count)")
+		c.Flags().Float64Var(&width, "width", 0, "pour boundary width (mil; omit or 0.2 only)")
 		pcb.AddCommand(c)
 	}
 	{
@@ -3276,155 +3315,19 @@ antenna sits), never the whole footprint (that would strand the module's ground
 pads). Antenna parts = the RF allowlist (WROOM/WROVER/ANTENNA/ESP32-C3-MINI/ESP8266
 or an ANT* designator). The keep-out DEPTH is block-declared (internal/blocks/data
 'keepout.end_frac'); the pad-free strip always caps it so it can never reach a pad.
-One region per part on the MULTI layer (spans all copper layers). Run AFTER
-placement; re-run 'pcb check' to confirm the antenna-keepout warning clears.
+One region per part on the MULTI layer (spans all copper layers), without a region
+name (names require follow-rule). Existing regions suppress creation only with
+complete polygon/rule/layer coverage. Unavailable input or unverified/partial
+creation returns non-zero and preserves actual IDs; inspect fresh state before
+retrying. Run AFTER placement, then save/reload and re-read regions + 'pcb check'.
 
   easyeda pcb antenna-keepout --project X --dry-run
   easyeda pcb antenna-keepout --project X`,
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				// ADR-0004 Decision 4: dry-run 必须纯计算 —— 机械保证。
-				if dryRun {
-					defer setDispatchDryRun(true)()
-				}
-				res, err := requestAction(cfg, "pcb.components.list", window,
-					map[string]any{"includeBBox": true, "includePads": true})
-				if err != nil {
-					return err
-				}
-				keepouts, _ := blocks.LoadAntennaKeepouts()
-				// Device name per component from the silk Device attribute — the same
-				// source pcb check keys on, so both detect the same RF parts (a placed
-				// part's `name` is often the "={Manufacturer Part}" template).
-				silkDev := map[string]string{}
-				if silk, serr := fetchPcbSilk(cfg, window); serr == nil {
-					for _, s := range silk {
-						if s.Kind == "attribute" && s.Key == "Device" && s.CompID != "" {
-							silkDev[s.CompID] = s.Text
-						}
-					}
-				}
-				// Idempotency: collect existing no-copper keep-out regions so a re-run
-				// doesn't stack duplicates over an antenna already protected.
-				var existingKO []cpRect
-				if rres, rerr := requestAction(cfg, "pcb.region.list", window, nil); rerr == nil && rres != nil {
-					for _, rr := range mnavSlice(rres.Result, "regions") {
-						rm, ok := rr.(map[string]any)
-						if !ok {
-							continue
-						}
-						// Only a MULTI-layer NoOuterCopper region (rules 5/6/7 on layer 12)
-						// actually satisfies `pcb check` for every layer — the exact region we
-						// emit. A top-only / inner-only region does NOT, so it must NOT suppress
-						// generation (else the antenna is left under-protected but "covered").
-						outer := false
-						for _, rt := range toFloatSlice(rm["ruleType"]) {
-							if rt == 5 || rt == 6 || rt == 7 { // no-wires/no-fills/no-pours = NoOuterCopper
-								outer = true
-							}
-						}
-						bb, ok := rm["bbox"].(map[string]any)
-						if !outer || int(asFloat(rm["layer"])) != pcbLayerMulti || !ok {
-							continue
-						}
-						existingKO = append(existingKO, cpRect{asFloat(bb["minX"]), asFloat(bb["minY"]), asFloat(bb["maxX"]), asFloat(bb["maxY"])})
-					}
-				}
-				type akPlan struct {
-					Designator string     `json:"designator"`
-					Device     string     `json:"device"`
-					Rect       [4]float64 `json:"rect"`
-					Chip       bool       `json:"chipAntenna,omitempty"` // #123: bbox+margin form, no no-wires
-					Created    bool       `json:"created"`
-				}
-				var plan []akPlan
-				var skipped []map[string]any
-				for _, rc := range mnavSlice(res.Result, "components") {
-					cm, ok := rc.(map[string]any)
-					if !ok {
-						continue
-					}
-					device := resolveAntennaDevice(silkDev[asString(cm["primitiveId"])], cm)
-					desig := asString(cm["designator"])
-					if !isAntennaDevice(device, desig) {
-						continue
-					}
-					bb, ok := cm["bbox"].(map[string]any)
-					if !ok {
-						skipped = append(skipped, map[string]any{"designator": desig, "reason": "no bbox"})
-						continue
-					}
-					var pads [][2]float64
-					for _, pi := range mnavSlice(cm, "pads") {
-						if pm, ok := pi.(map[string]any); ok {
-							pads = append(pads, [2]float64{asFloat(pm["x"]), asFloat(pm["y"])})
-						}
-					}
-					bminX, bminY := asFloat(bb["minX"]), asFloat(bb["minY"])
-					bmaxX, bmaxY := asFloat(bb["maxX"]), asFloat(bb["maxY"])
-					x0, y0, x1, y1, ok := antennaKeepoutRect(
-						bminX, bminY, bmaxX, bmaxY,
-						pads, antennaKeepoutFrac(keepouts, device), margin, padClear)
-					chip := false
-					if !ok && isChipAntennaSize(bmaxX-bminX, bmaxY-bminY) {
-						// #123: a discrete chip antenna (two-pad ceramic SMD) has no
-						// pad-free strip — the whole footprint is the radiator. Keep-out
-						// = bbox + --chip-margin every side; created WITHOUT no-wires so
-						// the 50Ω feed can reach the feed pad (#129).
-						x0, y0, x1, y1, ok = chipAntennaKeepoutRect(bminX, bminY, bmaxX, bmaxY, chipMargin)
-						chip = ok
-					}
-					if !ok {
-						skipped = append(skipped, map[string]any{"designator": desig, "reason": "no pad-free antenna strip found (and not chip-antenna sized)"})
-						continue
-					}
-					myRect := cpRect{x0, y0, x1, y1}
-					covered := false
-					for _, er := range existingKO {
-						if er.overlaps(myRect) {
-							covered = true
-							break
-						}
-					}
-					if covered {
-						skipped = append(skipped, map[string]any{"designator": desig, "reason": "already covered by an existing no-copper keep-out"})
-						continue
-					}
-					plan = append(plan, akPlan{Designator: desig, Device: device, Rect: [4]float64{x0, y0, x1, y1}, Chip: chip})
-				}
-				created := 0
-				for i := range plan {
-					if dryRun {
-						continue
-					}
-					points := rectCorners(plan[i].Rect[0], plan[i].Rect[1], plan[i].Rect[2], plan[i].Rect[3])
-					// Module strip: no-wires/no-fills/no-pours + no-inner-electrical.
-					// Chip antenna (#123): DROP no-wires — the feed line must enter the
-					// clearance zone to reach the feed pad (#129's live-verified trap).
-					rules := []any{5, 6, 7, 8}
-					if plan[i].Chip {
-						rules = []any{6, 7, 8}
-					}
-					if _, err := requestAction(cfg, "pcb.region.create", window, map[string]any{
-						"points":   points,
-						"layer":    pcbLayerMulti,
-						"ruleType": rules,
-						"name":     "antenna-" + plan[i].Designator,
-					}); err != nil {
-						skipped = append(skipped, map[string]any{"designator": plan[i].Designator, "reason": err.Error()})
-						continue
-					}
-					plan[i].Created = true
-					created++
-				}
-				out := map[string]any{
-					"ok": true, "dryRun": dryRun, "layer": pcbLayerMulti,
-					"planned": len(plan), "created": created,
-					"regions": plan, "skipped": skipped,
-				}
-				enc := json.NewEncoder(stdout)
-				enc.SetIndent("", "  ")
-				return enc.Encode(out)
+				return runPcbAntennaKeepout(cfg, window, pcbAntennaKeepoutOptions{
+					DryRun: dryRun, Margin: margin, PadClearance: padClear, ChipMargin: chipMargin,
+				}, stdout)
 			},
 		}
 		c.Flags().BoolVar(&dryRun, "dry-run", false, "print the keep-out plan without creating regions")
@@ -3668,7 +3571,7 @@ no-pours(7), no-inner-electrical(8), follow-rule(9). Default is a hard keep-out
 			c.Flags().StringArrayVar(&ruleTypes, "rule", nil, "rule type (repeatable): no-components|no-wires|no-fills|no-pours|no-inner-electrical|follow-rule (default keep-out)")
 			c.Flags().IntVar(&layer, "layer", 1, "copper layer id (TOP=1, BOTTOM=2; inner via 'easyeda pcb layers')")
 			c.Flags().StringVar(&name, "name", "", "DRC region name (requires --rule follow-rule)")
-			c.Flags().Float64Var(&width, "width", 0, "region border width (mil)")
+			c.Flags().Float64Var(&width, "width", 0, "region boundary width (mil; omit or 0.2 only)")
 			c.Flags().BoolVar(&locked, "locked", false, "create the region locked")
 			region.AddCommand(c)
 		}
@@ -3803,7 +3706,7 @@ carries a net. fillMode: solid (default) | mesh | inner.`,
 			c.Flags().StringVar(&net, "net", "", "net to bind the fill to (e.g. 3V3, GND)")
 			c.Flags().IntVar(&layer, "layer", 1, "layer id (TOP=1, BOTTOM=2; inner via 'easyeda pcb layers')")
 			c.Flags().StringVar(&fillMode, "fill-mode", "", "fill mode: solid (default) | mesh | inner")
-			c.Flags().Float64Var(&width, "width", 0, "fill border width (mil)")
+			c.Flags().Float64Var(&width, "width", 0, "fill boundary width (mil; omit or 0.2 only)")
 			c.Flags().BoolVar(&locked, "locked", false, "create the fill locked")
 			fill.AddCommand(c)
 		}

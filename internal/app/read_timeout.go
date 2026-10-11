@@ -12,6 +12,7 @@ import (
 const (
 	documentOpenReadBudget  = 30 * time.Second
 	schematicPinsReadBudget = 150 * time.Second
+	pourOrderReadBudget     = 60 * time.Second
 )
 
 // All CLI dispatch paths converge in postAction, including Apply and layout.
@@ -35,6 +36,13 @@ func effectiveReadTimeout(action string, payload any, requested time.Duration) t
 		data, err := json.Marshal(payload)
 		if err == nil && json.Unmarshal(data, &flags) == nil && flags.IncludePins {
 			budget = schematicPinsReadBudget
+		}
+	case "pcb.pour.create":
+		var fields map[string]json.RawMessage
+		data, err := json.Marshal(payload)
+		if err == nil && json.Unmarshal(data, &fields) == nil && fields["priority"] != nil {
+			// Four bounded source reads plus the awaited order setter/rebuild.
+			budget = pourOrderReadBudget
 		}
 	}
 	if budget > 0 && requested < budget+protocol.DispatchResponseGrace {

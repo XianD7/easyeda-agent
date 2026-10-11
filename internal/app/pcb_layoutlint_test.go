@@ -26,8 +26,8 @@ func TestAnalyzePcbLayout_Crossing(t *testing.T) {
 	if rep.CrossingCount != 1 {
 		t.Errorf("crossingCount=%d, want 1 (A×B at 5,5)", rep.CrossingCount)
 	}
-	if len(rep.Overlaps) != 0 || !rep.OK {
-		t.Errorf("expected no overlaps / OK, got overlaps=%d ok=%v", len(rep.Overlaps), rep.OK)
+	if len(rep.Overlaps) != 0 || rep.OK || !rep.Incomplete {
+		t.Errorf("expected no overlaps and incomplete evidence, got overlaps=%d ok=%v", len(rep.Overlaps), rep.OK)
 	}
 	if rep.Score != 96 { // 100 - 4*1 crossing
 		t.Errorf("score=%d, want 96", rep.Score)
@@ -50,7 +50,7 @@ func TestAnalyzePcbLayout_Overlap(t *testing.T) {
 }
 
 // A component reaching outside the outline is an ERROR; a clean parallel layout
-// with no crossings scores 100 / "easy".
+// with no crossings scores 100 diagnostically; unmeasured pads remain incomplete.
 func TestAnalyzePcbLayout_OutlineAndClean(t *testing.T) {
 	outline := bb(0, 0, 100, 100)
 	off := []pcbLComp{{Designator: "J1", BBox: bb(90, 90, 110, 110)}} // pokes past maxX/maxY
@@ -68,8 +68,8 @@ func TestAnalyzePcbLayout_OutlineAndClean(t *testing.T) {
 		{Designator: "U1", Net: "B", X: 0, Y: 2}, {Designator: "U2", Net: "B", X: 20, Y: 2},
 	}
 	rep2 := analyzePcbLayout(clean, pads, bb(-10, -10, 40, 40), 2)
-	if !rep2.OK || rep2.CrossingCount != 0 || rep2.Score != 100 || rep2.Verdict != "easy" {
-		t.Errorf("clean: ok=%v cross=%d score=%d verdict=%q, want true/0/100/easy", rep2.OK, rep2.CrossingCount, rep2.Score, rep2.Verdict)
+	if rep2.OK || rep2.CrossingCount != 0 || rep2.Score != 100 || rep2.Verdict != "incomplete" || !rep2.Incomplete {
+		t.Errorf("clean: ok=%v cross=%d score=%d verdict=%q, want false/0/100/incomplete", rep2.OK, rep2.CrossingCount, rep2.Score, rep2.Verdict)
 	}
 }
 
@@ -85,8 +85,8 @@ func TestAnalyzePcbLayout_ProtrudingConnector(t *testing.T) {
 		{Designator: "J1", Net: "USB_DM", X: 5, Y: 55},
 	}
 	rep := analyzePcbLayout(protrude, padsIn, outline, 6)
-	if !rep.OK || len(rep.OutsideOutline) != 0 {
-		t.Errorf("protruding connector (pads inside): ok=%v outside=%d, want true/0", rep.OK, len(rep.OutsideOutline))
+	if rep.OK || !rep.Incomplete || len(rep.OutsideOutline) != 0 {
+		t.Errorf("protruding connector (pads inside): ok=%v outside=%d, want false/0 (unmeasured shape)", rep.OK, len(rep.OutsideOutline))
 	}
 
 	// Same body, but now a pad actually falls off the board (x=-5) → real error.

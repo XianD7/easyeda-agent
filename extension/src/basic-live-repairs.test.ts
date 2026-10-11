@@ -49,7 +49,7 @@ test('PCB stale ID and unreadable inventory refuse before modify', async (t) => 
 	assert.equal(writes, 0);
 });
 
-for (const mode of ['keepout', 'named-rule', 'invalid-name', 'echo-name', 'wrong-geometry', 'unreadable'] as const) {
+for (const mode of ['keepout', 'named-rule', 'invalid-name', 'echo-name', 'wrong-geometry', 'unreadable', 'duplicate'] as const) {
 	test(`region create reads actual persistent state: ${mode}`, async (t) => {
 		let writes = 0;
 		const source = [0, 0, 'L', 20, 0, 20, 20, 0, 20, 0, 0];
@@ -62,7 +62,7 @@ for (const mode of ['keepout', 'named-rule', 'invalid-name', 'echo-name', 'wrong
 			pcb_MathPolygon: { createPolygon: () => ({ getSource: () => source }) },
 			pcb_PrimitiveRegion: {
 				create: async () => { writes++; return primitive({ PrimitiveId: 'region', RegionName: 'RULE' }); },
-				getAll: async () => mode === 'unreadable' ? undefined : [fresh],
+				getAll: async () => mode === 'unreadable' ? undefined : mode === 'duplicate' ? [fresh, fresh] : [fresh],
 			},
 		};
 		t.after(() => { delete (globalThis as any).eda; });

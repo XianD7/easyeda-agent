@@ -239,6 +239,18 @@ func parseNetPathPads(result map[string]any) ([]pcbPadP, error) {
 		if componentLabel == "" {
 			componentLabel = fmt.Sprintf("components[%d]", ci)
 		}
+		if state, declared := pcbStringMap(cm["availability"])["pads"]; declared && state != "available" {
+			return nil, fmt.Errorf("component %s: pad inventory is %s", componentLabel, state)
+		}
+		if issue := pcbCaptureErrors(cm["captureErrors"])["pads"]; issue != nil {
+			return nil, fmt.Errorf("component %s: pad inventory capture failed: %v", componentLabel, issue)
+		}
+		if rawFailures, exists := cm["padFailures"]; exists && rawFailures != nil {
+			failures, ok := rawFailures.([]any)
+			if !ok || len(failures) > 0 {
+				return nil, fmt.Errorf("component %s: pad inventory has serialization failures", componentLabel)
+			}
+		}
 		componentPads, err := netPathRequiredSlice(cm, "pads")
 		if err != nil {
 			return nil, fmt.Errorf("component %s: %w", componentLabel, err)
@@ -454,6 +466,11 @@ func netPathCopperLayerNumber(m map[string]any, prefix string) (int, error) {
 }
 
 func parseNetPathPadShape(m map[string]any, p *pcbPadP, prefix string) error {
+	if issue := pcbPadCaptureIssue(m); issue != "" {
+		p.ShapeOK = false
+		p.ShapeIssue = issue
+		return fmt.Errorf("%s: %s", prefix, issue)
+	}
 	if special, exists := m["specialPad"]; exists && special != nil {
 		a, ok := special.([]any)
 		if !ok {

@@ -1,15 +1,50 @@
 package app
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestLegalizeVirtualProjectionPreservesNativePadEvidence(t *testing.T) {
+	snap := nativeCornerSnapshot([]any{"RECT", 20.0, 8.0, 1.0})
+	c := snap.Components[0]
+	c.Pads[0].Rotation = 13
+	c.Pads[0].SpecialPad = []any{}
+	c.Pads[0].Availability["specialPad"] = "unavailable"
+	c.Pads[0].CaptureErrors = map[string]any{"specialPad": map[string]any{"code": "getter-failed", "message": "injected"}}
+	c.Pads[0].GeometryStatus, c.Pads[0].GeometryReason = "unknown", "source capture incomplete"
+	c.Availability["pads"] = "unavailable"
+	c.CaptureErrors = map[string]any{"pads": map[string]any{"code": "partial", "message": "one pad unavailable"}}
+	c.PadFailures = []map[string]any{{"index": 1, "error": map[string]any{"code": "getter-failed"}}}
+	projected := padsOf(c)[0]
+	if projected.ID != c.Pads[0].ID || projected.Rotation != 13 || !reflect.DeepEqual(projected.Shape, c.Pads[0].Shape) || !reflect.DeepEqual(projected.SpecialPad, c.Pads[0].SpecialPad) || !reflect.DeepEqual(projected.Availability, c.Pads[0].Availability) || !reflect.DeepEqual(projected.CaptureErrors, c.Pads[0].CaptureErrors) || projected.GeometryStatus != "unknown" || projected.GeometryReason != c.Pads[0].GeometryReason {
+		t.Fatalf("stationary projection lost native pad evidence: %+v", projected)
+	}
+	v := applyMoveToVComp(c, apMove{ID: c.ID, Designator: c.Designator, NewX: 100, NewY: 100, NewRot: 90, SetRot: true})
+	p := v.pads[0]
+	if p.ID != projected.ID || p.Rotation != 103 || p.X != 100 || p.Y != 100 || !reflect.DeepEqual(p.Shape, projected.Shape) || !reflect.DeepEqual(p.CaptureErrors, projected.CaptureErrors) || !reflect.DeepEqual(p.Availability, projected.Availability) {
+		t.Fatalf("moved projection lost native pad geometry: %+v", p)
+	}
+	if c.Pads[0].Rotation != 13 || c.Pads[0].X != 0 || c.Pads[0].Y != 0 {
+		t.Fatal("virtual move changed the source snapshot")
+	}
+	rep := layoutOfVirtual([]vComp{v}, nil, 6)
+	if !rep.Incomplete || rep.Coverage.PadsInventoryKnown || len(rep.Coverage.UnverifiedPads) != 1 || rep.Coverage.UnverifiedPads[0].PrimitiveID != p.ID || rep.Coverage.UnverifiedPads[0].ComponentPrimitiveID != c.ID {
+		t.Fatalf("virtual report lost capture uncertainty: %+v", rep.Coverage)
+	}
+}
 
 // legalize 测试的合成板：几何刻意简单到能手算。
 // 板框 0..1000 × -1000..0(y-UP,负半轴),两件已就位的固定件 + 一件被规划移动的件。
 
 func legalizeTestSnap() *boardSnapshot {
 	mk := func(id, des string, x, y, w, h float64, rot float64, pads []boardPad) boardComp {
+		// These synthetic fixtures model square RECT copper explicitly; extent
+		// alone is no longer proof of a pad's native shape.
+		for i := range pads {
+			pads[i].Shape = []any{"RECT", pads[i].W, pads[i].H, 0.0}
+		}
 		return boardComp{
 			ID: id, Designator: des, Layer: 1, X: x, Y: y, Rotation: rot,
 			BBox: &layoutBBox{MinX: x - w/2, MinY: y - h/2, MaxX: x + w/2, MaxY: y + h/2},

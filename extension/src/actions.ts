@@ -1,6 +1,7 @@
 import { projectOpen, projectExport } from './project-transfer';
 import { moveSchematicAttribute } from './schematic-attribute-move';
 import { documentSourceGet, documentSourceRoundtrip } from './document-source';
+import { applyAndVerifyPourOrder, preparePourOrder, PourOrderError, verifyPourOrderReadback, type PourOrderVerification } from './pcb-pour-order';
 import { listSystemCommonLibrary } from './common-library';
 import { silkSlotFacts, validSilkRect, type SilkLabel } from './pcb-silk-placement';
 /**
@@ -331,30 +332,85 @@ export function pcbPadExtent(shape: unknown, rotation: unknown): { width: number
 	}
 }
 
-function padExtent(pad: PcbPad): { width: number; height: number } | null {
+type PcbCaptureAvailability = 'not-requested' | 'available' | 'unavailable';
+type PcbCaptureError = { code: string; message: string };
+type PcbCapturedValue = {
+	value: unknown;
+	availability: 'available' | 'unavailable';
+	error?: PcbCaptureError;
+};
+
+function unavailablePcbValue(code: string, message: string, value: unknown = null): PcbCapturedValue {
+	return { value, availability: 'unavailable', error: { code, message } };
+}
+
+function classifyPcbValue(value: unknown, name: string, valid: (value: unknown) => boolean): PcbCapturedValue {
+	if (value === undefined) return unavailablePcbValue('undefined-result', `${name} returned undefined.`);
+	if (value === null) return unavailablePcbValue('null-result', `${name} returned null.`);
+	if (!valid(value)) return unavailablePcbValue('invalid-result', `${name} returned an invalid value.`, value);
+	return { value, availability: 'available' };
+}
+
+function capturePcbValue(getter: (() => unknown) | undefined, name: string, valid: (value: unknown) => boolean, optionalProperty = false): PcbCapturedValue {
+	if (!getter) return unavailablePcbValue('missing-getter', `${name} is unavailable.`);
 	try {
-		const special = pad.getState_SpecialPad?.();
-		if (Array.isArray(special) && special.length > 0) return null;
-		return pcbPadExtent(pad.getState_Pad?.(), pad.getState_Rotation?.());
+		const value = getter();
+		if (optionalProperty && (value === undefined || value === null)) return { value: null, availability: 'available' };
+		return classifyPcbValue(value, name, valid);
 	}
+	catch (err) { return unavailablePcbValue('getter-threw', `${name}: ${describeThrown(err)}`); }
+}
+
+async function captureAsyncPcbValue(getter: (() => Promise<unknown>) | undefined, name: string, valid: (value: unknown) => boolean): Promise<PcbCapturedValue> {
+	if (!getter) return unavailablePcbValue('missing-getter', `${name} is unavailable.`);
+	try { return classifyPcbValue(await getter(), name, valid); }
+	catch (err) { return unavailablePcbValue('getter-threw', `${name}: ${describeThrown(err)}`); }
+}
+
+function capturePcbPadGeometry(pad: PcbPad): { shape: PcbCapturedValue; specialPad: PcbCapturedValue } {
+	return {
+		shape: capturePcbValue(
+			typeof pad.getState_Pad === 'function' ? () => pad.getState_Pad() : undefined,
+			'getState_Pad',
+			value => Array.isArray(value) && value.length > 0 && typeof value[0] === 'string',
+		),
+		specialPad: capturePcbValue(
+			typeof pad.getState_SpecialPad === 'function' ? () => pad.getState_SpecialPad() : undefined,
+			// The official SDK declares specialPad? on the primitive and constructor,
+			// and getState_SpecialPad(): Shape | undefined. A successful nullish
+			// read is the optional property's absent state, unlike missing/throwing.
+			'getState_SpecialPad', Array.isArray, true,
+		),
+	};
+}
+
+function capturedPcbPadExtent(geometry: ReturnType<typeof capturePcbPadGeometry>, rotation: unknown): { width: number; height: number } | null {
+	// An absent optional property or observed empty array has no special copper.
+	if (geometry.shape.availability !== 'available' || geometry.specialPad.availability !== 'available'
+		|| (geometry.specialPad.value !== null && (!Array.isArray(geometry.specialPad.value) || geometry.specialPad.value.length !== 0))) return null;
+	return pcbPadExtent(geometry.shape.value, rotation);
+}
+
+function padExtent(pad: PcbPad): { width: number; height: number } | null {
+	try { return capturedPcbPadExtent(capturePcbPadGeometry(pad), pad.getState_Rotation?.()); }
 	catch { return null; }
 }
 
 /**
  * Serialize a single PCB component pad to plain JSON. Pads carry the
  * net-by-name connectivity model that replaces schematic net flags.
- * width/height are the REAL axis-aligned copper extents (mil) from the pad's
- * shape tuple — so Go-side checks/routing stop guessing a nominal pad size —
- * omitted for complex-polygon pads (consumers keep their fallback).
+ * width/height are derived axis-aligned extents from supported source tuples.
+ * Preserve the raw tuple without inferring or converting its units. Omit these
+ * derived fields if special copper is present or its getter is unavailable.
  *
  * @param pad - the PCB component pad primitive object
  * @returns a plain JSON record
  */
 export function serializePcbPad(pad: PcbPad): Record<string, unknown> {
-	let shape: unknown = null;
-	let specialPad: unknown = null;
-	try { shape = pad.getState_Pad?.() ?? null; } catch { /* unreadable stays null */ }
-	try { specialPad = pad.getState_SpecialPad?.() ?? null; } catch { /* unreadable stays null */ }
+	const geometry = capturePcbPadGeometry(pad);
+	const captureErrors: Record<string, PcbCaptureError> = {};
+	if (geometry.shape.error) captureErrors.shape = geometry.shape.error;
+	if (geometry.specialPad.error) captureErrors.specialPad = geometry.specialPad.error;
 	const rotation = pad.getState_Rotation();
 	const record: Record<string, unknown> = {
 		primitiveId: pad.getState_PrimitiveId(),
@@ -367,10 +423,14 @@ export function serializePcbPad(pad: PcbPad): Record<string, unknown> {
 		padType: pad.getState_PadType(),
 		// Keep the source tuple.  width/height are only a bbox for general PCB
 		// clearance consumers; connectivity evidence must reason from shape.
-		shape,
-		specialPad,
+		shape: geometry.shape.value,
+		specialPad: geometry.specialPad.value,
+		availability: { shape: geometry.shape.availability, specialPad: geometry.specialPad.availability },
+		captureErrors,
+		captureSources: { shape: 'getState_Pad', specialPad: 'getState_SpecialPad' },
 	};
-	const ext = Array.isArray(specialPad) && specialPad.length > 0 ? null : pcbPadExtent(shape, rotation);
+	if (geometry.specialPad.availability === 'available') record.specialPadPresent = Array.isArray(geometry.specialPad.value) && geometry.specialPad.value.length > 0;
+	const ext = capturedPcbPadExtent(geometry, rotation);
 	if (ext) {
 		record.width = ext.width;
 		record.height = ext.height;
@@ -8766,28 +8826,86 @@ const pcbComponentsList: Handler = async (payload) => {
 	}
 
 	const serialized: Array<Record<string, unknown>> = [];
+	const coverage = {
+		pads: { requested: includePads, available: 0, unavailable: 0, notRequested: 0, observed: 0, serialized: 0, failed: 0, geometryAvailable: 0, geometryUnavailable: 0 },
+		bbox: { requested: includeBBox, available: 0, unavailable: 0, notRequested: 0 },
+	};
 	for (const component of components) {
 		const record = serializePcbComponent(component);
+		const componentPrimitiveId = record.primitiveId as string;
+		const availability: Record<'pads' | 'bbox', PcbCaptureAvailability> = { pads: 'not-requested', bbox: 'not-requested' };
+		const captureErrors: Record<string, PcbCaptureError> = {};
 		if (includeBBox) {
-			try {
-				const box = await eda.pcb_Primitive.getPrimitivesBBox([component.getState_PrimitiveId()]);
-				if (box) record.bbox = box;
-			}
-			catch { /* bbox is optional */ }
+			const captured = await captureAsyncPcbValue(
+				typeof eda.pcb_Primitive?.getPrimitivesBBox === 'function'
+					? () => eda.pcb_Primitive.getPrimitivesBBox([componentPrimitiveId]) : undefined,
+				'getPrimitivesBBox',
+				value => {
+					if (typeof value !== 'object' || value === null) return false;
+					const box = value as Record<string, unknown>;
+					return ['minX', 'minY', 'maxX', 'maxY'].every(key => typeof box[key] === 'number' && Number.isFinite(box[key]))
+						&& (box.minX as number) <= (box.maxX as number) && (box.minY as number) <= (box.maxY as number);
+				},
+			);
+			availability.bbox = captured.availability;
+			if (captured.availability === 'available') record.bbox = captured.value;
+			if (captured.error) captureErrors.bbox = captured.error;
 		}
 		if (includePads) {
-			try {
-				const pads = await eda.pcb_PrimitiveComponent.getAllPinsByPrimitiveId(
-					component.getState_PrimitiveId(),
-				);
-				record.pads = (pads ?? []).map(serializePcbPad);
+			const captured = await captureAsyncPcbValue(
+				typeof eda.pcb_PrimitiveComponent.getAllPinsByPrimitiveId === 'function'
+					? () => eda.pcb_PrimitiveComponent.getAllPinsByPrimitiveId(componentPrimitiveId) : undefined,
+				'getAllPinsByPrimitiveId', Array.isArray,
+			);
+			availability.pads = captured.availability;
+			if (captured.error) captureErrors.pads = captured.error;
+			if (captured.availability === 'available') {
+				const pads = captured.value as Array<PcbPad>;
+				const serializedPads: Array<Record<string, unknown>> = [];
+				const padFailures: Array<Record<string, unknown>> = [];
+				coverage.pads.observed += pads.length;
+				for (let index = 0; index < pads.length; index++) {
+					const pad = pads[index];
+					try {
+						const serializedPad = serializePcbPad(pad);
+						serializedPads.push(serializedPad);
+						coverage.pads.serialized++;
+						const geometry = serializedPad.availability as Record<string, string>;
+						if (geometry.shape === 'available' && geometry.specialPad === 'available') coverage.pads.geometryAvailable++;
+						else coverage.pads.geometryUnavailable++;
+					}
+					catch (err) {
+						const failure: Record<string, unknown> = {
+							index, componentPrimitiveId,
+							error: { code: 'pad-serialization-failed', message: describeThrown(err) },
+						};
+						// Identity getters fail independently. The source index always
+						// preserves the failed slot even when neither ID can be read.
+						try { const id = pad?.getState_PrimitiveId?.(); if (id !== undefined && id !== null) failure.primitiveId = id; } catch { /* index remains */ }
+						try { const number = pad?.getState_PadNumber?.(); if (number !== undefined && number !== null) failure.padNumber = number; } catch { /* index remains */ }
+						padFailures.push(failure);
+						coverage.pads.failed++;
+					}
+				}
+				record.pads = serializedPads;
+				record.padFailures = padFailures;
+				if (padFailures.length > 0) {
+					availability.pads = 'unavailable';
+					captureErrors.pads = { code: 'pad-serialization-failed', message: `${padFailures.length} of ${pads.length} pad records could not be serialized.` };
+				}
 			}
-			catch { /* pads are optional */ }
+		}
+		record.availability = availability;
+		record.captureErrors = captureErrors;
+		for (const field of ['pads', 'bbox'] as const) {
+			if (availability[field] === 'not-requested') coverage[field].notRequested++;
+			else coverage[field][availability[field]]++;
 		}
 		serialized.push(record);
 	}
 
-	return { result: { components: serialized, count: serialized.length } };
+	const partial = coverage.pads.unavailable > 0 || coverage.bbox.unavailable > 0 || coverage.pads.geometryUnavailable > 0;
+	return { result: { components: serialized, count: serialized.length, partial, incomplete: partial, coverage } };
 };
 
 /**
@@ -13082,7 +13200,20 @@ const pcbSave: Handler = async (payload) => {
 // earlier "无法创建覆铜边框图元" failures). After create, rebuildCopperRegion()
 // computes the actual poured copper (Pour region → Poured copper).
 
+// Web 4.1.60's polygon engine fixes Copper/Fill/Prohibited/Constraint Region
+// strokes at 0.02 internal units (= 0.2mil), including through modify(). Do not
+// create an object whose explicit width is known to be impossible to honor.
+function regionBoundaryWidth(payload: Record<string, unknown>): number | undefined {
+	const width = payload.lineWidth;
+	if (width !== undefined && width !== 0.2) {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,
+			'Region, pour and fill boundary width only supports 0.2mil; omit lineWidth or use 0.2. No primitive was created.');
+	}
+	return width as number | undefined;
+}
+
 const pcbPourCreate: Handler = async (payload) => {
+	const lineWidth = regionBoundaryWidth(payload);
 	const rawPts = payload.points;
 	if (!Array.isArray(rawPts) || rawPts.length < 3) {
 		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'points must be an array of >= 3 [x,y] pairs (mil).');
@@ -13107,8 +13238,7 @@ const pcbPourCreate: Handler = async (payload) => {
 	const fillMap: Record<string, string> = { solid: 'solid', grid: '90grid', grid45: '45grid' };
 	const fill = (fillMap[optionalString(payload, 'fill') ?? 'solid'] ?? 'solid') as unknown as EPCB_PrimitivePourFillMethod;
 	const pourName = optionalString(payload, 'name');
-	const priority = optionalNumber(payload, 'priority');
-	const lineWidth = optionalNumber(payload, 'lineWidth');
+	const orderPlan = await preparePourOrder(payload.priority, Number(layer));
 
 	// Polygon source array: [x0,y0,'L',x1,y1,...,x0,y0] — a single 'L' command then
 	// a run of vertex pairs, EXPLICITLY closed by repeating the first vertex. Matches
@@ -13124,7 +13254,9 @@ const pcbPourCreate: Handler = async (payload) => {
 
 	let pour;
 	try {
-		pour = await eda.pcb_PrimitivePour.create(net, layer, poly, fill, undefined, pourName, priority, lineWidth);
+		// The create API ignores priority 0 and clamps positive insertion values.
+		// Create once with its default, then use the awaited public instance setter.
+		pour = await eda.pcb_PrimitivePour.create(net, layer, poly, fill, undefined, pourName, undefined, lineWidth);
 	}
 	catch (err) {
 		throw edaError(err, 'Failed to create copper pour (铺铜).');
@@ -13137,6 +13269,7 @@ const pcbPourCreate: Handler = async (payload) => {
 	let poured = false;
 	let rebuildAttempted = false;
 	let rebuildError: string | undefined;
+	let orderProof: PourOrderVerification | undefined;
 	const readBoundary = async () => {
 		// Do not filter by the requested net: a wrong-net write must remain visible.
 		const pours = await eda.pcb_PrimitivePour.getAll();
@@ -13144,16 +13277,19 @@ const pcbPourCreate: Handler = async (payload) => {
 		const matches = pours.filter(p => p.getState_PrimitiveId() === primitiveId);
 		if (matches.length !== 1) throw new Error('Created pour is missing or ambiguous in fresh readback.');
 		const fresh = matches[0];
+		let sdkPriority: number | null = null;
+		let sdkPriorityReadError: string | undefined;
+		try { sdkPriority = fresh.getState_PourPriority(); }
+		catch (err) { sdkPriorityReadError = describeThrown(err); }
 		const actual = { primitiveId, net: fresh.getState_Net(), layer: fresh.getState_Layer(),
 			fill: fresh.getState_PourFillMethod(), pourName: fresh.getState_PourName() ?? null,
-			priority: fresh.getState_PourPriority(), lineWidth: fresh.getState_LineWidth(),
+			priority: sdkPriority, ...(sdkPriorityReadError ? { sdkPriorityReadError } : {}), lineWidth: fresh.getState_LineWidth(),
 			locked: fresh.getState_PrimitiveLock(), source: fresh.getState_ComplexPolygon().getSource() };
 		const differences: string[] = [];
 		if (actual.net !== net) differences.push('net');
 		if (actual.layer !== Number(layer)) differences.push('layer');
 		if (actual.fill !== String(fill)) differences.push('fill');
 		if (pourName !== undefined && actual.pourName !== pourName) differences.push('pourName');
-		if (priority !== undefined && actual.priority !== priority) differences.push('priority');
 		if (lineWidth !== undefined && actual.lineWidth !== lineWidth) differences.push('lineWidth');
 		if (!equivalentLinearRegionGeometry(requestedSource, actual.source)) differences.push('geometry');
 		return { fresh, actual, differences };
@@ -13162,17 +13298,28 @@ const pcbPourCreate: Handler = async (payload) => {
 		let state = await readBoundary();
 		// Never generate copper from a boundary already known to differ from the request.
 		if (state.differences.length === 0) {
+			if (orderPlan) {
+				orderProof = await applyAndVerifyPourOrder(orderPlan, state.fresh);
+				state = await readBoundary();
+			}
+		}
+		if (state.differences.length === 0) {
 			rebuildAttempted = true;
 			try { poured = !!(await state.fresh.rebuildCopperRegion()); }
 			catch (err) { rebuildError = describeThrown(err); }
 			state = await readBoundary();
+			if (orderPlan && orderProof) orderProof = await verifyPourOrderReadback(orderPlan, orderProof);
 		}
-		return { result: { ...state.actual, poured, rebuildAttempted,
+		return { result: { ...state.actual,
+			...(orderProof ? { sdkPriority: state.actual.priority, priority: orderProof.nativeOrder,
+				prioritySource: 'native-source', priorityVerified: true, orderProof }
+				: { prioritySource: 'sdk', priorityVerified: false }), poured, rebuildAttempted,
 			...(rebuildError ? { rebuildError } : {}), verified: state.differences.length === 0,
 			...(state.differences.length ? { partial: true, differences: state.differences } : {}) } };
 	}
 	catch (err) {
 		return { result: { primitiveId, poured, rebuildAttempted,
+			...(err instanceof PourOrderError ? { orderProof: err.evidence } : orderProof ? { orderProof } : {}),
 			...(rebuildError ? { rebuildError } : {}), partial: true, verified: false, error: describeThrown(err) },
 			warnings: ['Pour was created but boundary readback failed; inspect this ID before retrying.'] };
 	}
@@ -13600,7 +13747,7 @@ function parseRegionRuleTypes(raw: unknown): number[] {
 
 // closedPolygonFromPoints turns a payload `points` array (>= 3 [x,y] pairs, mil)
 // into the explicitly-closed IPCB_Polygon that region/pour create() require.
-function closedPolygonFromPoints(raw: unknown) {
+function closedPolygonFromPoints(raw: unknown, sourceSnapshot?: { source: Array<number | string> }) {
 	if (!Array.isArray(raw) || raw.length < 3) {
 		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'points must be an array of >= 3 [x,y] pairs (mil).');
 	}
@@ -13614,6 +13761,9 @@ function closedPolygonFromPoints(raw: unknown) {
 	const src: Array<number | string> = [pts[0][0], pts[0][1], 'L'];
 	for (let i = 1; i < pts.length; i++) src.push(pts[i][0], pts[i][1]);
 	src.push(pts[0][0], pts[0][1]);
+	// Keep the request separate from both a host-mutated input array and the
+	// constructor's returned polygon. Neither is the source of requested geometry.
+	if (sourceSnapshot) sourceSnapshot.source = src.slice();
 	const poly = eda.pcb_MathPolygon.createPolygon(src as unknown as TPCB_PolygonSourceArray);
 	if (!poly) {
 		throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Failed to build polygon from points (createPolygon returned undefined — points must form a valid closed polygon).');
@@ -13622,14 +13772,16 @@ function closedPolygonFromPoints(raw: unknown) {
 }
 
 const pcbRegionCreate: Handler = async (payload) => {
-	const poly = closedPolygonFromPoints(payload.points);
+	const lineWidth = regionBoundaryWidth(payload);
+	const request = { source: [] as Array<number | string> };
+	const poly = closedPolygonFromPoints(payload.points, request);
+	const requestedSource = request.source;
 	const layer = (optionalNumber(payload, 'layer') ?? 1) as unknown as TPCB_LayersOfRegion;
 	const ruleTypes = parseRegionRuleTypes(payload.ruleType ?? payload.ruleTypes);
 	const regionName = optionalString(payload, 'name');
 	if (regionName !== undefined && !ruleTypes.includes(9)) {
 		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, 'Region name is only supported with follow-rule (9); no region was created.');
 	}
-	const lineWidth = optionalNumber(payload, 'lineWidth');
 	const lock = payload.locked === true;
 
 	let region;
@@ -13650,8 +13802,9 @@ const pcbRegionCreate: Handler = async (payload) => {
 	try {
 		const regions = await eda.pcb_PrimitiveRegion.getAll();
 		if (!Array.isArray(regions)) throw new Error('Region inventory unavailable after creation.');
-		const fresh = regions.find(r => r.getState_PrimitiveId() === primitiveId);
-		if (!fresh || fresh.getState_PrimitiveId() !== primitiveId) throw new Error('Created region is absent from fresh readback.');
+		const matches = regions.filter(r => r.getState_PrimitiveId() === primitiveId);
+		if (matches.length !== 1) throw new Error('Created region is missing or ambiguous in fresh readback.');
+		const fresh = matches[0];
 		const actual = { primitiveId, layer: fresh.getState_Layer(), ruleType: fresh.getState_RuleType(),
 			regionName: fresh.getState_RegionName() ?? null, source: fresh.getState_ComplexPolygon().getSource(),
 			lineWidth: fresh.getState_LineWidth(), locked: fresh.getState_PrimitiveLock() };
@@ -13659,7 +13812,7 @@ const pcbRegionCreate: Handler = async (payload) => {
 		if (actual.layer !== Number(layer)) differences.push('layer');
 		if (JSON.stringify([...actual.ruleType].sort()) !== JSON.stringify([...ruleTypes].sort())) differences.push('ruleType');
 		if (regionName !== undefined && actual.regionName !== regionName) differences.push('regionName');
-		if (!equivalentLinearRegionGeometry(poly.getSource(), actual.source)) differences.push('geometry');
+		if (!equivalentLinearRegionGeometry(requestedSource, actual.source)) differences.push('geometry');
 		if (lineWidth !== undefined && actual.lineWidth !== lineWidth) differences.push('lineWidth');
 		if (actual.locked !== lock) differences.push('locked');
 		return { result: { ...actual, ruleTypeNames: actual.ruleType.map(v => REGION_RULE_NAME[v] ?? String(v)),
@@ -13682,8 +13835,11 @@ const pcbRegionList: Handler = async (payload) => {
 	catch (err) {
 		throw edaError(err, 'Failed to list PCB regions.');
 	}
+	if (!Array.isArray(regions)) {
+		throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'PCB region inventory is unavailable: getAll did not return an array.');
+	}
 	const list: Array<Record<string, unknown>> = [];
-	for (const r of (regions ?? [])) {
+	for (const r of regions) {
 		const rules = (r.getState_RuleType() ?? []) as unknown as number[];
 		let bbox;
 		try {
@@ -13751,11 +13907,13 @@ function parseFillMode(raw: unknown): number {
 }
 
 const pcbFillCreate: Handler = async (payload) => {
-	const poly = closedPolygonFromPoints(payload.points);
+	const lineWidth = regionBoundaryWidth(payload);
+	const request = { source: [] as Array<number | string> };
+	const poly = closedPolygonFromPoints(payload.points, request);
+	const requestedSource = request.source;
 	const layer = (optionalNumber(payload, 'layer') ?? 1) as unknown as TPCB_LayersOfFill;
 	const net = optionalString(payload, 'net');
 	const fillMode = parseFillMode(payload.fillMode) as unknown as EPCB_PrimitiveFillMode;
-	const lineWidth = optionalNumber(payload, 'lineWidth');
 	const lock = payload.locked === true;
 
 	let fill;
@@ -13768,14 +13926,31 @@ const pcbFillCreate: Handler = async (payload) => {
 	if (!fill) {
 		throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Fill creation returned no primitive (check layer/points/net).');
 	}
-	return {
-		result: {
-			primitiveId: fill.getState_PrimitiveId(),
-			net: fill.getState_Net() ?? null,
-			layer: Number(fill.getState_Layer()),
-			fillMode: FILL_MODE_NAME[Number(fill.getState_FillMode() ?? 0)] ?? String(fill.getState_FillMode()),
-		},
-	};
+	const primitiveId = fill.getState_PrimitiveId();
+	try {
+		const fills = await eda.pcb_PrimitiveFill.getAll();
+		if (!Array.isArray(fills)) throw new Error('Fill inventory unavailable after creation.');
+		const matches = fills.filter(f => f.getState_PrimitiveId() === primitiveId);
+		if (matches.length !== 1) throw new Error('Created fill is missing or ambiguous in fresh readback.');
+		const fresh = matches[0];
+		const actualMode = fresh.getState_FillMode();
+		const actual = { primitiveId, net: fresh.getState_Net() ?? null, layer: fresh.getState_Layer(),
+			fillMode: FILL_MODE_NAME[Number(actualMode)] ?? String(actualMode), lineWidth: fresh.getState_LineWidth(),
+			locked: fresh.getState_PrimitiveLock(), source: fresh.getState_ComplexPolygon().getSource() };
+		const differences: string[] = [];
+		if (actual.layer !== Number(layer)) differences.push('layer');
+		if (net !== undefined && actual.net !== net) differences.push('net');
+		if (actualMode !== fillMode) differences.push('fillMode');
+		if (lineWidth !== undefined && actual.lineWidth !== lineWidth) differences.push('lineWidth');
+		if (actual.locked !== lock) differences.push('locked');
+		if (!equivalentLinearRegionGeometry(requestedSource, actual.source)) differences.push('geometry');
+		return { result: { ...actual, verified: differences.length === 0,
+			...(differences.length ? { partial: true, differences } : {}) } };
+	}
+	catch (err) {
+		return { result: { primitiveId, partial: true, verified: false, error: describeThrown(err) },
+			warnings: ['Fill was created but readback failed; inspect this ID before retrying.'] };
+	}
 };
 
 const pcbFillList: Handler = async (payload) => {

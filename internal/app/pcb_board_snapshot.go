@@ -43,18 +43,23 @@ import (
 // 0 = 未知（POLYGON 焊盘 padExtent 返回 null）——下游必须把 0 当"测不到"而不是
 // "尺寸为零"。Layer 是焊盘的铜层：1=top / 2=bottom / 12=multi(通孔桶，每层导通)。
 type boardPad struct {
-	ID         string  `json:"primitiveId,omitempty"`
-	Number     string  `json:"padNumber"`
-	Net        string  `json:"net"`
-	Layer      int     `json:"layer"`
-	X          float64 `json:"x"`
-	Y          float64 `json:"y"`
-	W          float64 `json:"width,omitempty"`
-	H          float64 `json:"height,omitempty"`
-	Rotation   float64 `json:"rotation"`
-	PadType    int     `json:"padType,omitempty"` // 0=NORMAL 1=TEST 2=MARK_POINT
-	Shape      any     `json:"shape,omitempty"`
-	SpecialPad any     `json:"specialPad,omitempty"`
+	ID                string            `json:"primitiveId,omitempty"`
+	Number            string            `json:"padNumber"`
+	Net               string            `json:"net"`
+	Layer             int               `json:"layer"`
+	X                 float64           `json:"x"`
+	Y                 float64           `json:"y"`
+	W                 float64           `json:"width,omitempty"`
+	H                 float64           `json:"height,omitempty"`
+	Rotation          float64           `json:"rotation"`
+	PadType           int               `json:"padType,omitempty"` // 0=NORMAL 1=TEST 2=MARK_POINT
+	Shape             any               `json:"shape,omitempty"`
+	SpecialPad        any               `json:"specialPad,omitempty"`
+	SpecialPadPresent *bool             `json:"specialPadPresent,omitempty"`
+	Availability      map[string]string `json:"availability,omitempty"`
+	CaptureErrors     map[string]any    `json:"captureErrors,omitempty"`
+	GeometryStatus    string            `json:"geometryStatus,omitempty"`
+	GeometryReason    string            `json:"geometryReason,omitempty"`
 }
 
 // isThroughHole 报告焊盘是否为通孔（连接器不给 hole 字段，只能用 MULTI 层反推）。
@@ -67,17 +72,206 @@ func (p boardPad) isThroughHole() bool { return p.Layer == pcbLayerMulti }
 // X/Y 是封装 anchor（原点），**不是 bbox 中心**：两者的偏移随旋转变，所以判位置
 // 一律用 center()，写坐标才用 anchor（对齐 `pcb modify --center` 的既有约定）。
 type boardComp struct {
-	ID         string      `json:"primitiveId"`
-	Designator string      `json:"designator"`
-	Name       string      `json:"name,omitempty"`
-	Device     string      `json:"device,omitempty"` // manufacturerId 优先，见 cpDeviceName
-	Layer      int         `json:"layer"`            // 装配面 1=top 2=bottom 0=unknown
-	X          float64     `json:"x"`                // anchor，非中心
-	Y          float64     `json:"y"`
-	Rotation   float64     `json:"rotation"`
-	Locked     bool        `json:"locked,omitempty"`
-	BBox       *layoutBBox `json:"bbox,omitempty"` // 渲染包围盒（含丝印，非 IPC courtyard）
-	Pads       []boardPad  `json:"pads"`
+	ID            string            `json:"primitiveId"`
+	UniqueID      string            `json:"uniqueId,omitempty"`
+	Footprint     any               `json:"footprint,omitempty"`
+	Designator    string            `json:"designator"`
+	Name          string            `json:"name,omitempty"`
+	Device        string            `json:"device,omitempty"` // manufacturerId 优先，见 cpDeviceName
+	Layer         int               `json:"layer"`            // 装配面 1=top 2=bottom 0=unknown
+	X             float64           `json:"x"`                // anchor，非中心
+	Y             float64           `json:"y"`
+	Rotation      float64           `json:"rotation"`
+	Locked        bool              `json:"locked,omitempty"`
+	BBox          *layoutBBox       `json:"bbox,omitempty"` // 渲染包围盒（含丝印，非 IPC courtyard）
+	Pads          []boardPad        `json:"pads"`
+	Availability  map[string]string `json:"availability,omitempty"`
+	CaptureErrors map[string]any    `json:"captureErrors,omitempty"`
+	PadFailures   []map[string]any  `json:"padFailures,omitempty"`
+}
+
+// pcbGeometryCoverage separates observed geometry from missing inventories and
+// unsupported shapes. Legacy extents remain usable for layout diagnostics, but
+// do not certify a copper shape or a complete inspection.
+type pcbGeometryCoverage struct {
+	Complete                      bool               `json:"complete"`
+	ComponentsInventoryKnown      bool               `json:"componentsInventoryKnown"`
+	PadsInventoryKnown            bool               `json:"padsInventoryKnown"`
+	ComponentCount                int                `json:"componentCount"`
+	TotalPads                     int                `json:"totalPads"`
+	KnownGeometryPads             int                `json:"knownGeometryPads"`
+	UnsupportedGeometryPads       int                `json:"unsupportedGeometryPads"`
+	UnknownGeometryPads           int                `json:"unknownGeometryPads"`
+	LegacyGeometryPads            int                `json:"legacyGeometryPads"`
+	UnverifiedPads                []pcbUnverifiedPad `json:"unverifiedPads,omitempty"`
+	MissingPadInventoryComponents []string           `json:"missingPadInventoryComponents,omitempty"`
+	MissingBBoxComponents         []string           `json:"missingBBoxComponents,omitempty"`
+	Limitations                   []string           `json:"limitations,omitempty"`
+}
+
+type pcbUnverifiedPad struct {
+	ComponentPrimitiveID string `json:"componentPrimitiveId,omitempty"`
+	Designator           string `json:"designator"`
+	PrimitiveID          string `json:"primitiveId,omitempty"`
+	PadNumber            string `json:"padNumber"`
+	Status               string `json:"status"`
+	Reason               string `json:"reason"`
+	CaptureFailed        bool   `json:"captureFailed,omitempty"`
+}
+
+func pcbStringMap(raw any) map[string]string {
+	if m, ok := raw.(map[string]string); ok {
+		return m
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for key, value := range m {
+		out[key], _ = value.(string)
+	}
+	return out
+}
+
+func pcbCaptureErrors(raw any) map[string]any {
+	m, _ := raw.(map[string]any)
+	return m
+}
+
+// pcbPadCaptureIssue is shared by consumers which already parse native pads.
+// A failed special-pad getter cannot be interpreted as a normal base pad.
+func pcbPadCaptureIssue(pm map[string]any) string {
+	a := pcbStringMap(pm["availability"])
+	errors := pcbCaptureErrors(pm["captureErrors"])
+	for _, key := range []string{"shape", "specialPad"} {
+		if issue, exists := errors[key]; exists && issue != nil {
+			return fmt.Sprintf("%s capture failed: %v", key, issue)
+		}
+	}
+	for _, key := range []string{"shape", "specialPad"} {
+		if state, exists := a[key]; exists && state != "available" {
+			return fmt.Sprintf("%s capture is %s", key, state)
+		}
+	}
+	return ""
+}
+
+func pcbMeasuredPad(p boardPad, ref string) (pcbPadP, string, string) {
+	parsed := pcbPadP{ID: p.ID, Designator: ref, Number: p.Number, Net: p.Net, Layer: p.Layer,
+		X: p.X, Y: p.Y, W: p.W, H: p.H, Rotation: p.Rotation}
+	label := ref + "." + p.Number
+	if issue := pcbPadCaptureIssue(map[string]any{"availability": p.Availability, "captureErrors": p.CaptureErrors}); issue != "" {
+		parsed.ShapeIssue = issue
+		parsed.W, parsed.H = 0, 0
+		return parsed, "unknown", issue
+	}
+	if p.GeometryStatus == "unknown" && p.GeometryReason != "" {
+		parsed.ShapeIssue = p.GeometryReason
+		return parsed, "unknown", p.GeometryReason
+	}
+	if !allFinite(p.X, p.Y, p.Rotation) {
+		parsed.ShapeIssue = "pad pose is non-finite"
+		return parsed, "unknown", parsed.ShapeIssue
+	}
+	if !netPathCopperLayer(p.Layer) && p.Layer != pcbLayerMulti {
+		parsed.ShapeIssue = "pad copper layer is unavailable or unsupported"
+		return parsed, "unknown", parsed.ShapeIssue
+	}
+	if err := parseNetPathPadShape(map[string]any{"shape": p.Shape, "specialPad": p.SpecialPad}, &parsed, label); err != nil {
+		parsed.ShapeIssue = err.Error()
+		parsed.W, parsed.H = 0, 0
+		return parsed, "unknown", parsed.ShapeIssue
+	}
+	if !parsed.ShapeOK {
+		status := "unsupported"
+		if p.Shape == nil {
+			status = "unknown"
+		}
+		return parsed, status, parsed.ShapeIssue
+	}
+	return parsed, "available", ""
+}
+
+func (s *boardSnapshot) geometryCoverage(requireBBox bool) pcbGeometryCoverage {
+	c := pcbGeometryCoverage{ComponentsInventoryKnown: s != nil && s.Components != nil, PadsInventoryKnown: true}
+	if s != nil && s.ComponentsAvailability != "" && s.ComponentsAvailability != "available" {
+		c.ComponentsInventoryKnown = false
+	}
+	if !c.ComponentsInventoryKnown {
+		c.PadsInventoryKnown = false
+		c.Limitations = append(c.Limitations, "components inventory is unavailable")
+		if s == nil || s.Components == nil {
+			return c
+		}
+	}
+	c.ComponentCount = len(s.Components)
+	for _, component := range s.Components {
+		state, declared := component.Availability["pads"]
+		known := declared && state == "available" && component.Pads != nil
+		if !declared {
+			known = len(component.Pads) > 0
+		}
+		if component.CaptureErrors["pads"] != nil || len(component.PadFailures) > 0 {
+			known = false
+		}
+		if !known {
+			c.PadsInventoryKnown = false
+			c.MissingPadInventoryComponents = append(c.MissingPadInventoryComponents, component.Designator)
+		}
+		bboxState, bboxDeclared := component.Availability["bbox"]
+		if requireBBox && (component.BBox == nil || bboxDeclared && bboxState != "available" || component.CaptureErrors["bbox"] != nil) {
+			c.MissingBBoxComponents = append(c.MissingBBoxComponents, component.Designator)
+		}
+		for _, p := range component.Pads {
+			c.TotalPads++
+			_, status, reason := pcbLayoutPadGeometry(p, component.Designator)
+			if status != "available" {
+				c.UnverifiedPads = append(c.UnverifiedPads, pcbUnverifiedPad{ComponentPrimitiveID: component.ID,
+					Designator: component.Designator, PrimitiveID: p.ID, PadNumber: p.Number, Status: status, Reason: reason,
+					CaptureFailed: pcbPadCaptureIssue(map[string]any{"availability": p.Availability, "captureErrors": p.CaptureErrors}) != ""})
+			}
+			switch status {
+			case "available":
+				c.KnownGeometryPads++
+			case "unsupported":
+				c.UnsupportedGeometryPads++
+			default:
+				c.UnknownGeometryPads++
+				if p.Shape == nil && p.W > 0 && p.H > 0 {
+					c.LegacyGeometryPads++
+				}
+			}
+		}
+	}
+	if len(c.MissingPadInventoryComponents) > 0 {
+		c.Limitations = append(c.Limitations, "pad inventory unavailable/incomplete for "+joinCapped(c.MissingPadInventoryComponents, 12))
+	}
+	if len(c.MissingBBoxComponents) > 0 {
+		c.Limitations = append(c.Limitations, "rendered bbox unavailable for "+joinCapped(c.MissingBBoxComponents, 12))
+	}
+	if c.UnsupportedGeometryPads > 0 {
+		c.Limitations = append(c.Limitations, fmt.Sprintf("%d pad(s) have captured source shapes unsupported by exact pad-contact inspection", c.UnsupportedGeometryPads))
+	}
+	if c.UnknownGeometryPads > 0 {
+		c.Limitations = append(c.Limitations, fmt.Sprintf("%d pad(s) have unknown source geometry (%d legacy extent-only)", c.UnknownGeometryPads, c.LegacyGeometryPads))
+	}
+	c.Complete = c.ComponentsInventoryKnown && c.PadsInventoryKnown && len(c.MissingBBoxComponents) == 0 && c.UnknownGeometryPads == 0 && c.UnsupportedGeometryPads == 0
+	return c
+}
+
+func pcbReadbackCoverage(result map[string]any, requireBBox bool) pcbGeometryCoverage {
+	components, ok := result["components"].([]any)
+	if !ok {
+		return (&boardSnapshot{}).geometryCoverage(requireBBox)
+	}
+	snap := &boardSnapshot{Components: parseBoardComponents(result)}
+	c := snap.geometryCoverage(requireBBox)
+	if len(snap.Components) != len(components) {
+		c.ComponentsInventoryKnown, c.PadsInventoryKnown, c.Complete = false, false, false
+		c.Limitations = append(c.Limitations, "components inventory contains malformed records")
+	}
+	return c
 }
 
 // center 返回判位置该用的坐标：有 bbox 用 bbox 几何中心，否则退回 anchor。
@@ -278,8 +472,8 @@ func (o *boardOutline) containsPoint(x, y float64) bool {
 // 报错），下游据此降级并在报告里说明——**绝不能因为某段数据缺失就静默跳过一整维
 // 却仍然给满分**，那会让"好板得高分"的校准判据失去意义。
 type boardSnapshot struct {
-	ComponentsAvailability string               `json:"componentsAvailability,omitempty"`
 	Components             []boardComp          `json:"components"`
+	ComponentsAvailability string               `json:"componentsAvailability,omitempty"`
 	Outline                *boardOutline        `json:"outline,omitempty"`
 	Silk                   []pcbSilkText        `json:"silk,omitempty"`
 	CopperLayers           int                  `json:"copperLayers,omitempty"`
@@ -367,15 +561,21 @@ func (s *boardSnapshot) toLayoutComps() ([]pcbLComp, []pcbLPad) {
 	comps := make([]pcbLComp, 0, len(s.Components))
 	var pads []pcbLPad
 	for _, c := range s.Components {
-		comps = append(comps, pcbLComp{Designator: c.Designator, Layer: c.Layer, BBox: c.BBox})
+		comps = append(comps, pcbLComp{ID: c.ID, Designator: c.Designator, Layer: c.Layer, BBox: c.BBox,
+			Availability: c.Availability, CaptureErrors: c.CaptureErrors, PadFailures: c.PadFailures})
 		for _, p := range c.Pads {
-			pads = append(pads, pcbLPad{
-				Designator: c.Designator, Number: p.Number, Net: p.Net,
-				Layer: p.Layer, X: p.X, Y: p.Y, W: p.W, H: p.H,
-			})
+			pads = append(pads, p.toLayoutPad(c.Designator))
 		}
 	}
 	return comps, pads
+}
+
+func (p boardPad) toLayoutPad(ref string) pcbLPad {
+	return pcbLPad{ID: p.ID, Designator: ref, Number: p.Number, Net: p.Net,
+		Layer: p.Layer, X: p.X, Y: p.Y, W: p.W, H: p.H,
+		Rotation: p.Rotation, Shape: p.Shape, SpecialPad: p.SpecialPad,
+		Availability: p.Availability, CaptureErrors: p.CaptureErrors,
+		GeometryStatus: p.GeometryStatus, GeometryReason: p.GeometryReason}
 }
 
 // toCheckPads 投影成 pcb check 规则族的焊盘入参（decap-too-far / via-in-pad …）。
@@ -383,10 +583,13 @@ func (s *boardSnapshot) toCheckPads() []pcbPadP {
 	var out []pcbPadP
 	for _, c := range s.Components {
 		for _, p := range c.Pads {
-			out = append(out, pcbPadP{
-				Designator: c.Designator, Number: p.Number, Net: p.Net,
-				Layer: p.Layer, X: p.X, Y: p.Y, W: p.W, H: p.H,
-			})
+			// Preserve the failed raw record in the snapshot/coverage, but never
+			// manufacture a diagnostic obstacle at a default (0,0) pose.
+			if !allFinite(p.X, p.Y, p.Rotation) || p.GeometryStatus == "unknown" && p.GeometryReason == "pad pose x/y/rotation is missing or malformed" {
+				continue
+			}
+			measured, _, _ := pcbMeasuredPad(p, c.Designator)
+			out = append(out, measured)
 		}
 	}
 	return out
@@ -492,10 +695,23 @@ func parseBoardComponents(result map[string]any) []boardComp {
 			continue
 		}
 		c := boardComp{
-			ID:         asString(cm["primitiveId"]),
-			Designator: asString(cm["designator"]),
-			Name:       asString(cm["name"]),
-			Device:     cpDeviceName(cm),
+			ID:            asString(cm["primitiveId"]),
+			UniqueID:      asString(cm["uniqueId"]),
+			Footprint:     cm["footprint"],
+			Designator:    asString(cm["designator"]),
+			Name:          asString(cm["name"]),
+			Device:        cpDeviceName(cm),
+			Availability:  pcbStringMap(cm["availability"]),
+			CaptureErrors: pcbCaptureErrors(cm["captureErrors"]),
+		}
+		if failures, ok := cm["padFailures"].([]any); ok {
+			for _, failure := range failures {
+				if item, ok := failure.(map[string]any); ok {
+					c.PadFailures = append(c.PadFailures, item)
+				} else {
+					c.PadFailures = append(c.PadFailures, map[string]any{"error": "malformed pad failure record"})
+				}
+			}
 		}
 		if v, ok := asFloatOK(cm["layer"]); ok {
 			c.Layer = int(v)
@@ -509,32 +725,41 @@ func parseBoardComponents(result map[string]any) []boardComp {
 			minY, ok2 := asFloatOK(bb["minY"])
 			maxX, ok3 := asFloatOK(bb["maxX"])
 			maxY, ok4 := asFloatOK(bb["maxY"])
-			if ok1 && ok2 && ok3 && ok4 {
+			if ok1 && ok2 && ok3 && ok4 && allFinite(minX, minY, maxX, maxY) && maxX >= minX && maxY >= minY {
 				c.BBox = &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
 			}
 		}
 		if rawPads, ok := cm["pads"].([]any); ok {
 			c.Pads = make([]boardPad, 0, len(rawPads))
-			for _, rp := range rawPads {
+			for index, rp := range rawPads {
 				pm, ok := rp.(map[string]any)
 				if !ok {
+					c.PadFailures = append(c.PadFailures, map[string]any{"index": index, "error": "malformed pad record"})
 					continue
 				}
 				p := boardPad{
-					ID:     asString(pm["primitiveId"]),
-					Number: asString(pm["padNumber"]),
-					Net:    asString(pm["net"]),
+					ID:             asString(pm["primitiveId"]),
+					Number:         asString(pm["padNumber"]),
+					Net:            asString(pm["net"]),
+					Availability:   pcbStringMap(pm["availability"]),
+					CaptureErrors:  pcbCaptureErrors(pm["captureErrors"]),
+					GeometryStatus: asString(pm["geometryStatus"]),
+					GeometryReason: asString(pm["geometryReason"]),
 				}
 				if v, ok := asFloatOK(pm["layer"]); ok {
 					p.Layer = int(v)
 				}
-				p.X, _ = asFloatOK(pm["x"])
-				p.Y, _ = asFloatOK(pm["y"])
+				var xOK, yOK, rotationOK bool
+				p.X, xOK = asFloatOK(pm["x"])
+				p.Y, yOK = asFloatOK(pm["y"])
 				// 0 = 连接器测不到（POLYGON 焊盘）。保持 0，下游用 halfExt 兜底，
 				// 不在这里瞎猜一个尺寸——猜出来的短路判定比没有更危险。
 				p.W, _ = asFloatOK(pm["width"])
 				p.H, _ = asFloatOK(pm["height"])
-				p.Rotation, _ = asFloatOK(pm["rotation"])
+				p.Rotation, rotationOK = asFloatOK(pm["rotation"])
+				if !xOK || !yOK || !rotationOK {
+					p.GeometryStatus, p.GeometryReason = "unknown", "pad pose x/y/rotation is missing or malformed"
+				}
 				if v, ok := asFloatOK(pm["padType"]); ok {
 					p.PadType = int(v)
 				}
@@ -543,6 +768,9 @@ func parseBoardComponents(result map[string]any) []boardComp {
 				// an axis-aligned envelope and cannot prove complex pad clearance.
 				p.Shape = pm["shape"]
 				p.SpecialPad = pm["specialPad"]
+				if present, known := pm["specialPadPresent"].(bool); known {
+					p.SpecialPadPresent = &present
+				}
 				c.Pads = append(c.Pads, p)
 			}
 		}

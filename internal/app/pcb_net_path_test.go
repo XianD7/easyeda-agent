@@ -651,3 +651,39 @@ func TestAnalyzePcbNetPathPrefersExplicitGuardJunctionOverWidthShortcut(t *testi
 		t.Fatalf("width-only ambiguity accepted: %v", err)
 	}
 }
+
+func TestNetPathRejectsExplicitCaptureFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mutate    func(map[string]any, map[string]any)
+		wantError bool
+	}{
+		{"ordinary optional special absent", func(c, p map[string]any) {
+			p["specialPad"] = nil
+			p["availability"] = map[string]any{"shape": "available", "specialPad": "available"}
+		}, false},
+		{"inventory not requested", func(c, p map[string]any) { c["availability"] = map[string]any{"pads": "not-requested"} }, true},
+		{"inventory unavailable but retained pads", func(c, p map[string]any) { c["availability"] = map[string]any{"pads": "unavailable"} }, true},
+		{"inventory capture failure", func(c, p map[string]any) {
+			c["captureErrors"] = map[string]any{"pads": map[string]any{"code": "getter-threw", "message": "inventory unavailable"}}
+		}, true},
+		{"partial serialization", func(c, p map[string]any) {
+			c["padFailures"] = []any{map[string]any{"index": 1, "error": map[string]any{"code": "getter-threw"}}}
+		}, true},
+		{"shape failure", func(c, p map[string]any) { p["availability"] = map[string]any{"shape": "unavailable"} }, true},
+		{"special getter failed with base shape", func(c, p map[string]any) {
+			p["availability"] = map[string]any{"specialPad": "unavailable"}
+			p["captureErrors"] = map[string]any{"specialPad": map[string]any{"code": "getter-threw", "message": "special unavailable"}}
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pad := map[string]any{"primitiveId": "p1", "padNumber": "1", "net": "N1", "layer": 1, "x": 0, "y": 0, "rotation": 0, "shape": []any{"RECT", 20, 10, 0}, "width": 20, "height": 10}
+			component := map[string]any{"primitiveId": "c1", "designator": "J1", "pads": []any{pad}}
+			tc.mutate(component, pad)
+			_, err := parseNetPathPads(map[string]any{"components": []any{component}})
+			if (err != nil) != tc.wantError {
+				t.Fatalf("capture contract err=%v wantError=%v", err, tc.wantError)
+			}
+		})
+	}
+}

@@ -177,7 +177,7 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		return pcbImportResultError(action, map[string]any{"imported": parsed.Result.Imported,
 			"confirm": parsed.Result.Confirm, "verified": parsed.Result.Verified != nil && *parsed.Result.Verified,
 			"partial": parsed.Result.Partial})
-	case "pcb.pour.create":
+	case "pcb.pour.create", "pcb.fill.create":
 		return pourBoundaryError(action, map[string]any{"primitiveId": parsed.Result.PrimitiveID,
 			"verified": parsed.Result.Verified != nil && *parsed.Result.Verified, "partial": parsed.Result.Partial})
 	case "schematic.page.rename":
@@ -212,20 +212,24 @@ func pcbImportResultError(action string, result map[string]any) error {
 
 // A pour create echo is not evidence of a persisted boundary. Keep the created
 // ID in the error so callers can account for a partial write without replaying it.
-type unverifiedPourBoundaryError struct{ primitiveID string }
+type unverifiedPourBoundaryError struct{ primitiveID, action string }
 
 func (e *unverifiedPourBoundaryError) Error() string {
-	return fmt.Sprintf("pcb.pour.create: boundary %q not verified; inspect returned IDs and fresh state before retrying", e.primitiveID)
+	action := e.action
+	if action == "" {
+		action = "pcb.pour.create"
+	}
+	return fmt.Sprintf("%s: boundary %q not verified; inspect returned IDs and fresh state before retrying", action, e.primitiveID)
 }
 
 func pourBoundaryError(action string, result map[string]any) error {
-	if action != "pcb.pour.create" {
+	if action != "pcb.pour.create" && action != "pcb.fill.create" {
 		return nil
 	}
 	verified, _ := result["verified"].(bool)
 	partial, _ := result["partial"].(bool)
 	if !verified || partial || asString(result["primitiveId"]) == "" {
-		return &unverifiedPourBoundaryError{primitiveID: asString(result["primitiveId"])}
+		return &unverifiedPourBoundaryError{primitiveID: asString(result["primitiveId"]), action: action}
 	}
 	return nil
 }

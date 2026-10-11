@@ -50,6 +50,9 @@ type vComp struct {
 	bbox           *layoutBBox
 	pads           []pcbLPad
 	moved          bool
+	availability   map[string]string
+	captureErrors  map[string]any
+	padFailures    []map[string]any
 }
 
 // legalizeConstrainedMoves 用 lint 纯核复算规划结果，消掉新引入的 blocking。
@@ -178,6 +181,7 @@ func buildVirtualComps(snap *boardSnapshot, moves []apMove) []vComp {
 		out = append(out, vComp{
 			id: c.ID, designator: c.Designator, layer: c.Layer,
 			bbox: c.BBox, pads: padsOf(c),
+			availability: c.Availability, captureErrors: c.CaptureErrors, padFailures: c.PadFailures,
 		})
 	}
 	return out
@@ -187,10 +191,7 @@ func buildVirtualComps(snap *boardSnapshot, moves []apMove) []vComp {
 func padsOf(c boardComp) []pcbLPad {
 	out := make([]pcbLPad, 0, len(c.Pads))
 	for _, p := range c.Pads {
-		out = append(out, pcbLPad{
-			Designator: c.Designator, Number: p.Number, Net: p.Net,
-			Layer: p.Layer, X: p.X, Y: p.Y, W: p.W, H: p.H,
-		})
+		out = append(out, p.toLayoutPad(c.Designator))
 	}
 	return out
 }
@@ -214,7 +215,8 @@ func applyMoveToVComp(c boardComp, m apMove) vComp {
 			}
 		}
 	}
-	v := vComp{id: c.ID, designator: c.Designator, layer: c.Layer, moved: true}
+	v := vComp{id: c.ID, designator: c.Designator, layer: c.Layer, moved: true,
+		availability: c.Availability, captureErrors: c.CaptureErrors, padFailures: c.PadFailures}
 	if c.BBox != nil {
 		bb := *c.BBox
 		if delta != 0 {
@@ -236,10 +238,9 @@ func applyMoveToVComp(c boardComp, m apMove) vComp {
 				w, h = h, w
 			}
 		}
-		v.pads = append(v.pads, pcbLPad{
-			Designator: c.Designator, Number: p.Number, Net: p.Net,
-			Layer: p.Layer, X: px + dx, Y: py + dy, W: w, H: h,
-		})
+		p.X, p.Y, p.W, p.H = px+dx, py+dy, w, h
+		p.Rotation = math.Mod(p.Rotation+delta, 360)
+		v.pads = append(v.pads, p.toLayoutPad(c.Designator))
 	}
 	return v
 }
@@ -265,7 +266,8 @@ func layoutOfVirtual(vs []vComp, outline *layoutBBox, minGap float64) pcbLayoutR
 	comps := make([]pcbLComp, 0, len(vs))
 	var pads []pcbLPad
 	for _, v := range vs {
-		comps = append(comps, pcbLComp{Designator: v.designator, Layer: v.layer, BBox: v.bbox})
+		comps = append(comps, pcbLComp{ID: v.id, Designator: v.designator, Layer: v.layer, BBox: v.bbox,
+			Availability: v.availability, CaptureErrors: v.captureErrors, PadFailures: v.padFailures})
 		pads = append(pads, v.pads...)
 	}
 	return analyzePcbLayout(comps, pads, outline, minGap)
