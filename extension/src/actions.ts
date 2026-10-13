@@ -2877,16 +2877,13 @@ const schematicPageClear: Handler = async (payload) => {
 /**
  * Delete schematic primitives of any type by id — generalizes
  * `schematic.component.delete` beyond components (wires, buses, graphics, flags).
- * Each id is routed to its owning `sch_Primitive*` class. With no `primitiveIds`,
- * the current selection is deleted (select first via `schematic.select`). No undo.
+ * Each id is routed to its owning `sch_Primitive*` class. `primitiveIds` is
+ * required: the canvas selection may be the user's, so it is never a target. No undo.
  */
 const schematicPrimitivesDelete: Handler = async (payload) => {
 	const raw = payload.primitiveIds;
-	let requested: Array<string> | null;
-	if (raw === undefined) {
-		requested = null;
-	}
-	else if (typeof raw === 'string') {
+	let requested: Array<string>;
+	if (typeof raw === 'string') {
 		requested = [raw];
 	}
 	else if (Array.isArray(raw) && raw.every(id => typeof id === 'string')) {
@@ -2895,7 +2892,7 @@ const schematicPrimitivesDelete: Handler = async (payload) => {
 	else {
 		throw new ActionError(
 			ErrorCodes.MISSING_PAYLOAD_FIELD,
-			'"primitiveIds" must be a string or string[] (omit it to delete the current selection).',
+			'Missing required field "primitiveIds" (string or string[]); deleting the canvas selection is not supported.',
 		);
 	}
 
@@ -2924,17 +2921,8 @@ const schematicPrimitivesDelete: Handler = async (payload) => {
 	}
 	catch (err) { enumerationWarnings.push(warnText('enumerate objects', err)); }
 
-	// Resolve targets: explicit ids, or the current selection.
 	await assertSchDeletionContext(deleteContext);
 	let targets = requested;
-	if (targets === null) {
-		try {
-			targets = (await eda.sch_SelectControl.getAllSelectedPrimitives_PrimitiveId()) ?? [];
-		}
-		catch (err) {
-			throw edaError(err, 'Failed to read the current selection.');
-		}
-	}
 
 	const idsByKey: Record<string, Array<string>> = {};
 	const notFound: Array<string> = [];
@@ -3795,30 +3783,6 @@ export const schematicPinSetNoConnect: Handler = async (payload) => {
 			notApplied: notApplied.map(c => c.pin),
 		},
 	};
-};
-
-// ─── Select ───────────────────────────────────────────────────────────
-
-const schematicSelect: Handler = async (payload) => {
-	const primitiveIds = payload.primitiveIds;
-	if (
-		!(typeof primitiveIds === 'string')
-		&& !(Array.isArray(primitiveIds) && primitiveIds.every(id => typeof id === 'string'))
-	) {
-		throw new ActionError(
-			ErrorCodes.MISSING_PAYLOAD_FIELD,
-			'Missing required field "primitiveIds" (string or string[]).',
-		);
-	}
-	let selected;
-	try {
-		await eda.sch_SelectControl.doSelectPrimitives(primitiveIds);
-		selected = await eda.sch_SelectControl.getAllSelectedPrimitives_PrimitiveId();
-	}
-	catch (err) {
-		throw edaError(err, 'Failed to select primitives.');
-	}
-	return { result: { selectedPrimitiveIds: selected } };
 };
 
 // ─── Snapshot ─────────────────────────────────────────────────────────
@@ -15120,21 +15084,6 @@ const viewFit: Handler = async () => {
 	}
 };
 
-/** Zoom to fit the currently selected primitives — 适应选中. */
-const viewFitSelection: Handler = async () => {
-	try {
-		const region = await eda.dmt_EditorControl.zoomToSelectedPrimitives();
-		if (region === false) {
-			throw new ActionError(ErrorCodes.EDA_CALL_FAILED, 'Canvas does not support fit-selection (or no focused canvas).');
-		}
-		return { result: { region } };
-	}
-	catch (err) {
-		if (err instanceof ActionError) throw err;
-		throw edaError(err, 'Failed to fit selection.');
-	}
-};
-
 /** Pan/zoom to a center coordinate and/or scale ratio (percent). */
 const viewZoom: Handler = async (payload) => {
 	const x = optionalNumber(payload, 'x');
@@ -15248,7 +15197,6 @@ const HANDLERS: Record<string, Handler> = {
 	'document.open': documentOpen,
 	'document.close': documentClose,
 	'view.fit': viewFit,
-	'view.fit_selection': viewFitSelection,
 	'view.zoom': viewZoom,
 	'view.region': viewRegion,
 	'schematic.pages.list': schematicPagesList,
@@ -15276,7 +15224,6 @@ const HANDLERS: Record<string, Handler> = {
 	'schematic.netflag.create': schematicNetflagCreate,
 	'schematic.pin.set_no_connect': schematicPinSetNoConnect,
 	'schematic.pin.disconnect': schematicPinDisconnect,
-	'schematic.select': schematicSelect,
 	'schematic.drc.check': schematicDrcCheck,
 	'schematic.check': schematicCheck,
 	'schematic.bridgeCheck': schematicBridgeCheck,

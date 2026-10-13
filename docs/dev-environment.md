@@ -91,8 +91,10 @@ easyeda doc switch <page|pcb|uuid> --project <name>
 
 ## 3. Import the connector + grant permission (first time per install)
 
-1. **高级(A) → 扩展管理器(E)… → 导入** and pick
-   `dist/easyeda-agent-connector.eext`.
+1. **高级(A) → 扩展管理器(E)… → 导入** and pick the versioned package that
+   `make eext` prints on its last line,
+   `extension/build/dist/easyeda-agent-connector_v<version>.eext`. (A top-level
+   `dist/*.eext` is a stale leftover from older builds — do not import it.)
 2. A security prompt appears: external-interaction permission is **disabled
    by default**. Confirm it.
 3. Enable the permission: in the connector's detail page, open the

@@ -2603,6 +2603,20 @@ test('prim-delete: primitives that survive the delete are reported, not counted 
 	}
 });
 
+test('prim-delete: omitting primitiveIds is refused, never deletes the canvas selection', async () => {
+	let selectionRead = false;
+	const eda = edaWithUndeletableText([], ['w1']) as any;
+	eda.sch_SelectControl = { getAllSelectedPrimitives_PrimitiveId: async () => { selectionRead = true; return ['w1']; } };
+	(globalThis as any).eda = eda;
+	try {
+		await assert.rejects(runAction('schematic.primitives.delete', {}), /primitiveIds/);
+		assert.equal(selectionRead, false, 'the user selection must never become a delete target');
+	}
+	finally {
+		delete (globalThis as any).eda;
+	}
+});
+
 test('prim-delete: a fully successful delete carries no partial flag', async () => {
 	(globalThis as any).eda = edaWithUndeletableText([], ['w1', 'w2']) as any;
 	try {

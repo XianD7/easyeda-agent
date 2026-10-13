@@ -97,7 +97,6 @@ uuid. CLI: `easyeda board …`. Maps to `eda.dmt_Board.*`.
 Act on the focused canvas; the editor view shortcuts. CLI: `easyeda view …`.
 
 - `view.fit` — zoom to fit all primitives (适应全部, the `K` shortcut) → `easyeda view fit`.
-- `view.fit_selection` — zoom to fit the current selection → `easyeda view fit-selection`.
 - `view.zoom` — pan/zoom to a center coordinate and/or scale percent (`--x/--y/--scale`; omitted keeps current).
 - `view.region` — zoom to a rectangular region (`--left/--right/--top/--bottom`, mil).
 

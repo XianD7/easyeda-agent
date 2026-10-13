@@ -1008,15 +1008,20 @@ NOT line up — re-wire the affected pins, then run ` + "`easyeda sch drc`" + ` 
 		var idsRaw string
 		var allowSheet bool
 		c := &cobra.Command{
-			Use:   "prim-delete",
-			Short: "Delete schematic primitives of ANY type by id (or the current selection if --ids omitted)",
-			Args:  cobra.NoArgs,
-			Example: `  easyeda sch prim-delete --ids id1,id2   # delete these (any primitive type)
-  easyeda sch prim-delete                 # delete the current selection`,
+			Use:     "prim-delete",
+			Short:   "Delete schematic primitives of ANY type by explicit id",
+			Args:    cobra.NoArgs,
+			Example: `  easyeda sch prim-delete --ids id1,id2   # delete these (any primitive type)`,
 			RunE: func(cmd *cobra.Command, args []string) error {
+				// No implicit "delete the current selection": the canvas
+				// selection may be the user's, and that path skipped the sheet
+				// guard below. Every delete names its targets.
+				if idsRaw == "" {
+					return fmt.Errorf("--ids is required (deleting the canvas selection is not supported)")
+				}
 				payload := map[string]any{}
 				var cascadePlan map[string]string // primitiveId → group-member designator
-				if idsRaw != "" {
+				{
 					ids, err := parseIDList(idsRaw)
 					if err != nil {
 						return err
@@ -1074,7 +1079,7 @@ NOT line up — re-wire the affected pins, then run ` + "`easyeda sch drc`" + ` 
 				return failOnSurvivingPrimitives(res, stderr)
 			},
 		}
-		c.Flags().StringVar(&idsRaw, "ids", "", "primitive IDs to delete (any type) — CSV: id1,id2; omit to delete the current selection")
+		c.Flags().StringVar(&idsRaw, "ids", "", "primitive IDs to delete (any type) — CSV: id1,id2 (required)")
 		c.Flags().BoolVar(&allowSheet, "allow-sheet", false, "allow deleting sheet/图框 primitives (blocked by default — a deleted sheet cannot be recreated via API)")
 		sch.AddCommand(c)
 	}
@@ -1610,31 +1615,6 @@ pull fresh ids before any follow-up mutation on it.`,
 		c.Flags().StringVar(&designator, "designator", "", "component designator, e.g. U1 (required)")
 		c.Flags().StringSliceVar(&pins, "pin", nil, "pin number(s); repeat the flag or comma-separate (required)")
 		c.Flags().BoolVar(&clear, "clear", false, "clear the no-connect flag instead of setting it")
-		sch.AddCommand(c)
-	}
-
-	// ── select ────────────────────────────────────────────────────────────
-	// schematic.select
-	{
-		var idsRaw string
-		c := &cobra.Command{
-			Use:     "select",
-			Short:   "Select schematic primitives by ID",
-			Args:    cobra.NoArgs,
-			Example: `  easyeda sch select --ids id1,id2`,
-			RunE: func(cmd *cobra.Command, args []string) error {
-				if idsRaw == "" {
-					return fmt.Errorf("--ids is required")
-				}
-				ids, err := parseIDList(idsRaw)
-				if err != nil {
-					return err
-				}
-				return dispatch(cfg, "schematic.select", window,
-					map[string]any{"primitiveIds": ids}, stdout, stderr)
-			},
-		}
-		c.Flags().StringVar(&idsRaw, "ids", "", "primitive IDs to select — CSV: id1,id2 (required)")
 		sch.AddCommand(c)
 	}
 

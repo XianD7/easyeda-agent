@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- `schematic.primitives.delete` 必须给出 `primitiveIds`，不再删除画布当前选中项（选中项可能是用户手动选的，且该路径绕过 CLI 图框守卫）；`sch prim-delete` 同步要求 `--ids`。
+- 移除从未调用、只服务于选中删除流程的 `schematic.select`（`sch select`）与 `view.fit_selection`（`view fit-selection`）。
+
 ## [1.10.0] - 2026-10-11
 
 - 新增离线 `project drawings`：核验明确输入、图片有效性和哈希，保留官方图片原字节，生成图册、说明与 manifest。
