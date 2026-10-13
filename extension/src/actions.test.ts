@@ -4262,6 +4262,30 @@ for (const mode of ['delayed', 'never-closes', 'no-button', 'duplicates', 'unrea
 	});
 }
 
+for (const grew of [false, true]) {
+	test(`PCB import with no dialog is a verified no-op only when the inventory is unchanged: grew=${grew}`, async t => {
+		const g = globalThis as any, previousDocument = g.document, previousEda = g.eda;
+		t.after(() => { g.document = previousDocument; g.eda = previousEda; });
+		let now = 0, ratlines = 0, reads = 0;
+		t.mock.method(Date, 'now', () => now);
+		t.mock.method(globalThis, 'setTimeout', (callback: () => void, ms: number) => {
+			return setImmediate(() => { now += ms; callback(); }) as unknown as ReturnType<typeof setTimeout>;
+		});
+		g.document = { querySelectorAll: () => [] };
+		const part = (id: string) => ({ getState_PrimitiveId: () => id, getState_UniqueId: () => `u-${id}` });
+		g.eda = {
+			dmt_Board: { getCurrentBoardInfo: async () => ({ name: 'board', schematic: { uuid: 'sch' }, pcb: { uuid: 'pcb' } }) },
+			pcb_PrimitiveComponent: { getAll: async () => (grew && reads++ > 0) ? [part('a'), part('b')] : [part('a')] },
+			pcb_Document: { importChanges: async () => true, startCalculatingRatline: async () => { ratlines++; return true; } },
+		};
+		const result: any = (await runAction('pcb.import_changes', {})).result;
+		assert.equal(result.confirm, 'no-dialog');
+		assert.equal(result.noChanges, !grew);
+		assert.equal(result.verified, !grew, 'an unchanged inventory without a dialog is already in sync');
+		assert.equal(result.partial, grew, 'parts appearing without a dialog stay unverified');
+	});
+}
+
 test('prim-delete waits for observed sync before the first official delete', async t => {
 	const g = globalThis as any, fx = edaWithUndeletableText([], ['w1']);
 	g.eda = fx; t.after(() => { delete g.eda; });

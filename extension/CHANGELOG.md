@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- `pcb.import_changes`：已同步的板子不弹确认框、导入接口直接返回 true 且器件清单不变时，判为已核验的空操作（新增 `noChanges:true`），不再按"未核验的部分导入"失败退出。
 - `schematic.primitives.delete` 支持 `cascade:true`：删除器件时连同其独占桩线与标识一起删除（与 component.delete 共用同一级联实现）；`sch prim-delete` 默认开启，`--no-cascade` 关闭。
 - `schematic.bridgeCheck` 不再把带网名的单脚桩线（`--kind net_label`，网名在导线 Name 属性上）误报为 ORPHAN。
 - PCB 布局操作（align/distribute/grid_snap/components.move/components.arrange）必须给 `primitiveIds`，不再回退到画布选中项。

@@ -11219,7 +11219,11 @@ const pcbImportChanges: Handler = async (payload) => {
 		}
 	}
 	catch { /* preserve the import result, but do not validate unknown identities */ }
-	const verified = imported === true && confirmOutcome === 'applied' && identityInventoryAvailable
+	// An already-synced board raises no 确认导入信息 dialog and importChanges resolves
+	// true at once; with the inventory unchanged that is a verified no-op, not a
+	// partial import (live 2026-10-14: re-import after sync exited 1 as "not verified").
+	const noChanges = imported === true && confirmOutcome === 'no-dialog' && componentsAfter === componentsBefore;
+	const verified = imported === true && (confirmOutcome === 'applied' || noChanges) && identityInventoryAvailable
 		&& duplicateUniqueIds.length === 0 && componentsAfter >= 0;
 	const partial = !verified && (imported === true || confirmOutcome === 'dialog-open');
 	if (verified && recomputeRatline) {
@@ -11231,6 +11235,7 @@ const pcbImportChanges: Handler = async (payload) => {
 		result: {
 			imported,
 			confirm: confirmOutcome,
+			noChanges,
 			apiTimedOut,
 			componentsBefore,
 			componentsAfter,

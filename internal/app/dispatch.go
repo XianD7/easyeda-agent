@@ -125,6 +125,7 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 			Saved       any    `json:"saved"`
 			Imported    bool   `json:"imported"`
 			Confirm     string `json:"confirm"`
+			NoChanges   bool   `json:"noChanges"`
 			OK          *bool  `json:"ok"`
 			Verified    *bool  `json:"verified"`
 			Partial     bool   `json:"partial"`
@@ -179,7 +180,7 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		}
 	case "pcb.import_changes":
 		return pcbImportResultError(action, map[string]any{"imported": parsed.Result.Imported,
-			"confirm": parsed.Result.Confirm, "verified": parsed.Result.Verified != nil && *parsed.Result.Verified,
+			"confirm": parsed.Result.Confirm, "noChanges": parsed.Result.NoChanges, "verified": parsed.Result.Verified != nil && *parsed.Result.Verified,
 			"partial": parsed.Result.Partial})
 	case "pcb.pour.create", "pcb.fill.create":
 		return pourBoundaryError(action, map[string]any{"primitiveId": parsed.Result.PrimitiveID,
@@ -208,7 +209,10 @@ func pcbImportResultError(action string, result map[string]any) error {
 	if action != "pcb.import_changes" {
 		return nil
 	}
-	if result["imported"] != true || result["confirm"] != "applied" || result["verified"] != true || result["partial"] == true {
+	// An already-synced board raises no dialog: the connector verifies that no-op
+	// (unchanged inventory) as noChanges, and it is a success, not a partial import.
+	applied := result["confirm"] == "applied" || (result["confirm"] == "no-dialog" && result["noChanges"] == true)
+	if result["imported"] != true || !applied || result["verified"] != true || result["partial"] == true {
 		return &unverifiedPCBImportError{confirm: asString(result["confirm"])}
 	}
 	return nil
