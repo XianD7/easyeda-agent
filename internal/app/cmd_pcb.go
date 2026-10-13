@@ -3225,7 +3225,14 @@ A SEED — verify with 'pcb layout-lint'. --dry-run prints the plan.
 				// constraint, exactly the pre-#126 behavior.
 				zoneSrc := "none"
 				if opt.board != nil {
-					if claims, _, zerr := loadZoneClaims(cfg, window); zerr == nil && len(claims) > 0 {
+					present := map[string]bool{}
+					for _, c := range comps {
+						present[strings.ToUpper(c.designator)] = true
+					}
+					claims, _, zerr := loadZoneClaims(cfg, window)
+					if missing := zoneClaimsMissing(claims, present); zerr == nil && len(missing) > 0 {
+						zoneSrc = fmt.Sprintf("stale claims ignored (board lacks %s) — `pcb zones set --spec` / `pcb zones clear`", zoneMissingList(missing))
+					} else if zerr == nil && len(claims) > 0 {
 						opt.zones = map[string]cpZoneClaim{}
 						for module, zc := range claims {
 							rect, ok := pcbZoneRect(zc.Zone, *opt.board)

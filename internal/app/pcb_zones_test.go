@@ -83,10 +83,12 @@ func TestFindZoneViolations(t *testing.T) {
 	if !strings.Contains(f.Message, "规范 §3.3") {
 		t.Errorf("finding must cite the design-rules section, got %q", f.Message)
 	}
-	// Claimed-but-absent part: skipped, not flagged.
+	// Claimed-but-absent part: the table belongs to another design — one stale
+	// finding replaces every violation (U2's designator match is coincidence).
 	zones["GHOST"] = &stageZoneClaim{Zone: "left", Parts: []string{"NOPE9"}}
-	if got := findZoneViolations(zones, board, parts); len(got) != 1 {
-		t.Errorf("absent claimed part must be skipped, got %+v", got)
+	got = findZoneViolations(zones, board, parts)
+	if len(got) != 1 || got[0].Type != "zone-claims-stale" || !strings.Contains(got[0].Message, "NOPE9") {
+		t.Errorf("absent claimed part must mark the table stale, got %+v", got)
 	}
 }
 

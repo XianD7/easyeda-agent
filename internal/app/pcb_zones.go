@@ -177,12 +177,22 @@ type zonePart struct {
 }
 
 // findZoneViolations flags claimed parts whose bbox center is outside their
-// zone's sub-rectangle of the board. Pure (unit-testable). Claimed-but-absent
-// designators are skipped — presence is the tier/netlist layers' concern.
+// zone's sub-rectangle of the board. Pure (unit-testable). Any claimed-but-absent
+// designator marks the whole table stale (zoneClaimsMissing): one
+// zone-claims-stale finding replaces the violations.
 func findZoneViolations(zones map[string]*stageZoneClaim, board cpRect, parts []zonePart) []pcbCheckFinding {
 	byDesig := map[string]zonePart{}
+	present := map[string]bool{}
 	for _, p := range parts {
 		byDesig[strings.ToUpper(p.Designator)] = p
+		present[strings.ToUpper(p.Designator)] = true
+	}
+	if missing := zoneClaimsMissing(zones, present); len(missing) > 0 {
+		return []pcbCheckFinding{{
+			Type: "zone-claims-stale", Level: "WARN",
+			Message: fmt.Sprintf("功能分区认领表与本板不符：认领的 %s 不在板上 — 这张表属于别的设计，已整表忽略（不报 zone-violation）；按当前 S0 `pcb zones set --spec <spec>` 重设，或 `pcb zones clear`",
+				zoneMissingList(missing)),
+		}}
 	}
 	var out []pcbCheckFinding
 	var names []string
@@ -216,6 +226,34 @@ func findZoneViolations(zones map[string]*stageZoneClaim, board cpRect, parts []
 		}
 	}
 	return out
+}
+
+// zoneClaimsMissing lists claimed designators (uppercase, sorted) absent from
+// the board. A table naming parts this board lacks was written for another
+// design and is stale AS A WHOLE — live 2026-10-13, an earlier ceshi run's
+// LDO/USB table raised 10 "violations" on a 10-part blink board whose C1/U1/R1
+// merely reused its designators. Neither the checker nor the placer consumes it.
+func zoneClaimsMissing(zones map[string]*stageZoneClaim, present map[string]bool) []string {
+	var missing []string
+	for _, zc := range zones {
+		if zc == nil {
+			continue
+		}
+		for _, d := range zc.Parts {
+			if !present[strings.ToUpper(d)] {
+				missing = append(missing, strings.ToUpper(d))
+			}
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+func zoneMissingList(missing []string) string {
+	if len(missing) > 8 {
+		return fmt.Sprintf("%s 等 %d 个", strings.Join(missing[:8], ","), len(missing))
+	}
+	return strings.Join(missing, ",")
 }
 
 // fetchZoneParts pulls the live component bbox centers for the violation rule.

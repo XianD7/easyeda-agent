@@ -250,6 +250,7 @@ type pcbCheckSummary struct {
 	CopperNearEdge    int `json:"copperNearEdge"`
 	FiducialMissing   int `json:"fiducialMissing"`
 	ZoneViolation     int `json:"zoneViolation"`
+	ZoneClaimsStale   int `json:"zoneClaimsStale,omitempty"`
 	// #168 连接器布局：内部件占板外沿 / 相邻对外口插头护套打架。
 	InternalOnEdge         int `json:"internalOnEdge"`
 	ConnectorPlugClearance int `json:"connectorPlugClearance"`
@@ -1923,7 +1924,11 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 		} else {
 			for _, f := range findZoneViolations(zones, board, parts) {
 				rep.Findings = append(rep.Findings, f)
-				rep.Summary.ZoneViolation++
+				if f.Type == "zone-claims-stale" {
+					rep.Summary.ZoneClaimsStale++
+				} else {
+					rep.Summary.ZoneViolation++
+				}
 				rep.Summary.Warnings++
 				rep.Summary.Total++
 			}
@@ -2472,9 +2477,9 @@ func renderPcbCheckReport(rep pcbCheckReport, w io.Writer) {
 		fmt.Fprintln(w, "  ✓ no DFM issues found")
 		return
 	}
-	fmt.Fprintf(w, "  ERROR=%d WARN=%d  |  dangling=%d acute=%d nonOrtho=%d overPad=%d clearance=%d silkFlipped=%d overlapVia=%d singleLayerVia=%d widthMismatch=%d dupSegment=%d coupling=%d antennaKeepout=%d netlessPour=%d viaCrossesPlane=%d floatingIsland=%d powerNotPoured=%d netlessViaInPad=%d widthUnderSpec=%d silkOverPad=%d silkOffBoard=%d decapTooFar=%d viaInPad=%d copperNearEdge=%d fiducialMissing=%d zoneViolation=%d internalOnEdge=%d plugClearance=%d matingBlocked=%d\n",
+	fmt.Fprintf(w, "  ERROR=%d WARN=%d  |  dangling=%d acute=%d nonOrtho=%d overPad=%d clearance=%d silkFlipped=%d overlapVia=%d singleLayerVia=%d widthMismatch=%d dupSegment=%d coupling=%d antennaKeepout=%d netlessPour=%d viaCrossesPlane=%d floatingIsland=%d powerNotPoured=%d netlessViaInPad=%d widthUnderSpec=%d silkOverPad=%d silkOffBoard=%d decapTooFar=%d viaInPad=%d copperNearEdge=%d fiducialMissing=%d zoneViolation=%d zoneClaimsStale=%d internalOnEdge=%d plugClearance=%d matingBlocked=%d\n",
 		s.Errors, s.Warnings-s.Errors,
-		s.DanglingEnds, s.AcuteAngles, s.NonOrthogonal, s.TrackOverPad, s.Clearance, s.SilkscreenFlipped, s.OverlappingVias, s.SingleLayerVias, s.WidthMismatches, s.DuplicateSegments, s.ParallelCoupling, s.AntennaKeepout, s.NetlessPours, s.ViaCrossesPlane, s.FloatingIslands, s.PowerNotPoured, s.NetlessViaInPad, s.WidthUnderSpec, s.SilkOverPad, s.SilkOffBoard, s.DecapTooFar, s.ViaInPad, s.CopperNearEdge, s.FiducialMissing, s.ZoneViolation, s.InternalOnEdge, s.ConnectorPlugClearance, s.ConnectorMatingBlocked)
+		s.DanglingEnds, s.AcuteAngles, s.NonOrthogonal, s.TrackOverPad, s.Clearance, s.SilkscreenFlipped, s.OverlappingVias, s.SingleLayerVias, s.WidthMismatches, s.DuplicateSegments, s.ParallelCoupling, s.AntennaKeepout, s.NetlessPours, s.ViaCrossesPlane, s.FloatingIslands, s.PowerNotPoured, s.NetlessViaInPad, s.WidthUnderSpec, s.SilkOverPad, s.SilkOffBoard, s.DecapTooFar, s.ViaInPad, s.CopperNearEdge, s.FiducialMissing, s.ZoneViolation, s.ZoneClaimsStale, s.InternalOnEdge, s.ConnectorPlugClearance, s.ConnectorMatingBlocked)
 	for _, f := range rep.Findings {
 		loc := ""
 		if f.At != nil {
