@@ -42,10 +42,10 @@
     }
   },
   "schematic_layout": {
-    "note": "信号流左入右出: CTRL→R→LED(+)→(−)→GND。偏移为原理图单位(y-UP，+dy 向上),必须落 5 格;间距按 0402/0805 实测 bbox 留 120",
+    "note": "信号流左入右出: CTRL→R→LED(+)→(−)→GND。偏移为原理图单位(y-UP，+dy 向上),必须落 5 格;间距按 0402/0805 实测 bbox 留 120。LED 转 180:符号 0° 时阳极(+)在右,背对 R;转过来让 R.2 与 LED.+ 面对面,block-apply 才能一根直连导线接上,而不是两支同名 netport(2026-10-13 演示)",
     "roles": {
       "R": { "dx": 0, "dy": 0 },
-      "LED": { "dx": 120, "dy": 0 }
+      "LED": { "dx": 120, "dy": 0, "rotation": 180 }
     }
   },
   "schematic_notes": [

@@ -1134,10 +1134,15 @@ func runBlockApply(cfg *appConfig, window, blockID string, in bapInput, partsPat
 		fmt.Fprintf(stderr, "warn: %s\n", w)
 	}
 
-	// 6. wire — delegate to autoconnect, which owns the stub geometry + idempotency.
+	// 6. wire — facing internal two-pin nets get one direct wire; everything else
+	// is delegated to autoconnect, which owns the stub geometry + idempotency.
+	direct := bapWireDirectPairs(cfg, window, plan.Nets, stderr)
 	var conns []acConnSpec
 	for _, n := range plan.Nets {
 		for _, m := range n.Members {
+			if direct[m] {
+				continue
+			}
 			conns = append(conns, acConnSpec{PinRef: m, Kind: n.Kind, Net: n.Net})
 		}
 	}

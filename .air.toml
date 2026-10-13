@@ -17,7 +17,7 @@ tmp_dir = "tmp"
   # Development must not overwrite the checked-out Skill with an older release.
   args_bin = ["daemon","start","--auto-update-skill=false"]
   # only watch Go sources of the daemon/CLI; ignore the connector, tools, docs
-  include_ext = ["go"]
+  include_ext = ["go", "json"] # json: go:embed block data (internal/blocks/data) must rebuild the CLI
   include_dir = ["cmd", "internal", "pkg"]
   exclude_dir = ["bin", "tmp", "testdata", "extension", "tools", "docs", "skills"]
   exclude_regex = ["_test\\.go"]

@@ -303,12 +303,13 @@ func TestPlanBlockApplyTemplate(t *testing.T) {
 		}
 		got[p.Role] = [3]float64{p.X, p.Y, p.Rotation}
 	}
-	// Shipped template: R at +0,+0, LED at +120,+0 (信号流左入右出).
+	// Shipped template: R at +0,+0, LED at +120,+0 turned 180 so its anode faces
+	// R.2 (信号流左入右出; a facing pair is wired pin-to-pin, 2026-10-13).
 	if got["R"] != [3]float64{400, 300, 0} {
 		t.Errorf("R placed at %v, want 400,300 r0", got["R"])
 	}
-	if got["LED"] != [3]float64{520, 300, 0} {
-		t.Errorf("LED placed at %v, want 520,300 r0", got["LED"])
+	if got["LED"] != [3]float64{520, 300, 180} {
+		t.Errorf("LED placed at %v, want 520,300 r180", got["LED"])
 	}
 }
 
