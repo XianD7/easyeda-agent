@@ -1459,11 +1459,14 @@ pull fresh ids before any follow-up mutation on it.`,
 				if err := validatePinTarget(pinRef != "", cmd.Flags().Changed("x"), cmd.Flags().Changed("y")); err != nil {
 					return err
 				}
+				var pin *acPin
 				if pinRef != "" {
-					x, y, err = resolveSchPinXY(cfg, window, pinRef)
+					resolved, err := resolveSchPin(cfg, window, pinRef)
 					if err != nil {
 						return err
 					}
+					pin = &resolved
+					x, y = resolved.X, resolved.Y
 				}
 				payload := map[string]any{
 					"pinX": x,
@@ -1471,8 +1474,8 @@ pull fresh ids before any follow-up mutation on it.`,
 					"kind": canonicalKind,
 					"net":  net,
 				}
-				if cmd.Flags().Changed("direction") {
-					payload["direction"] = direction
+				if d := connectStubDirection(direction, cmd.Flags().Changed("direction"), pin); d != "" {
+					payload["direction"] = d
 				}
 				if cmd.Flags().Changed("offset") {
 					payload["offset"] = offset
@@ -1501,7 +1504,7 @@ pull fresh ids before any follow-up mutation on it.`,
 		c.Flags().Float64Var(&y, "y", 0, "pin Y coordinate (use with --x instead of --pin)")
 		c.Flags().StringVar(&kind, "kind", "", netflagKindHelp)
 		c.Flags().StringVar(&net, "net", "", "net name (required)")
-		c.Flags().StringVar(&direction, "direction", "", "visual stub direction (up=higher on canvas, down=lower): up, down, left, right")
+		c.Flags().StringVar(&direction, "direction", "", "visual stub direction (up=higher on canvas, down=lower): up, down, left, right; default with --pin: the pin's measured outward side")
 		c.Flags().Float64Var(&offset, "offset", 0, "wire length in schematic units")
 		c.Flags().Float64Var(&rotation, "rotation", 0, "flag rotation override in degrees")
 		sch.AddCommand(c)

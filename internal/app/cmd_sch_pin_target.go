@@ -35,22 +35,32 @@ func validatePinTarget(pinSet, xSet, ySet bool) error {
 	}
 }
 
-// resolveSchPinXY resolves a DESIGNATOR:PIN reference to the pin's coordinate
-// on the active schematic page, reusing autoconnect's scene builder so the
-// error surface (off-page hint, ambiguity fan-out hint, pin-typo hint) is
-// identical across the command family.
-func resolveSchPinXY(cfg *appConfig, window, ref string) (x, y float64, err error) {
+// resolveSchPin resolves a DESIGNATOR:PIN reference to the measured pin on
+// the active schematic page, reusing autoconnect's scene builder so the error
+// surface (off-page hint, ambiguity fan-out hint, pin-typo hint) is identical
+// across the command family.
+func resolveSchPin(cfg *appConfig, window, ref string) (acPin, error) {
 	res, err := requestAction(cfg, "schematic.components.list", window, map[string]any{
 		"includeBBox": true,
 		"includePins": true,
 	})
 	if err != nil {
-		return 0, 0, err
+		return acPin{}, err
 	}
-	scene := buildScene(res.Result)
-	pin, err := resolvePinCoord(scene, ref)
-	if err != nil {
-		return 0, 0, err
+	return resolvePinCoord(buildScene(res.Result), ref)
+}
+
+// connectStubDirection picks the stub direction for `sch connect`: an explicit
+// --direction wins; otherwise a resolved --pin leaves along its measured
+// outward side (the same fact the geometry guard enforces), so the default can
+// no longer point the stub back into the owning body. Empty means the pin side
+// is unknown and the connector's per-kind default applies.
+func connectStubDirection(explicit string, explicitSet bool, pin *acPin) string {
+	if explicitSet {
+		return explicit
 	}
-	return pin.X, pin.Y, nil
+	if pin == nil {
+		return ""
+	}
+	return outwardDirection(*pin)
 }
