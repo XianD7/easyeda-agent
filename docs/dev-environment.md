@@ -171,8 +171,13 @@ make local-build VERSION=vX.Y.Z-dev.N DIST="$PWD/dist/local-vX.Y.Z-dev.N"
 # 2. Serve the fresh bundle over a local WebSocket (one-shot; exits after serving).
 node extension/scripts/hot-reload-server.mjs &     # ws://127.0.0.1:8790
 
-# 3. In the EDITOR PAGE, run hot-reload-inject.js — paste into the browser console,
-#    or (agent-driven) pass its body to a chrome-devtools MCP evaluate_script call.
+# 3. In the EDITOR PAGE, run hot-reload-inject.js. Agent-driven default (no CDP):
+#      easyeda debug exec --project <project> --timeout 60 --code \
+#        "$(cat extension/scripts/hot-reload-inject.js); return await hotReloadConnector({...})"
+#    EXPECTED_SHA256 = the installed bundle:
+#      unzip -p extension/build/dist/easyeda-agent-connector_v<old>.eext dist/index.js | shasum -a 256
+#    (A wrong guess is safe: the injector aborts both writes on mismatch.)
+#    Fallbacks: paste into the browser console, or a chrome-devtools evaluate_script.
 #    Call hotReloadConnector with TEAM, UUID, VERSION, EXPECTED_VERSION,
 #    EXPECTED_SHA256 (fresh installed bundle hash) and BUNDLE_SHA256 (local hash).
 #    It checks the existing permission/version/hash, atomically updates both
