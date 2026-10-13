@@ -310,6 +310,9 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		// Normalize before adaptive health observes the outcome, so persistence
 		// failures cannot leave a green save bucket in /health.
 		normalizeSaveResponse(&req, resp)
+		if err == nil {
+			explainDocTypeMismatch(ctx, &req, resp, target.dispatch)
+		}
 		return resp, err
 	}
 	resp, err, _ := forwardWithAdaptiveRetry(ctx, req, guardedDispatch, hooks)
