@@ -20,7 +20,7 @@ func stackupTestBoardResponse(c autolayoutTestCall, layersResponse string) strin
 	case "pcb.layers.list":
 		return layersResponse
 	case "pcb.components.list":
-		return `{"ok":true,"result":{"components":[{"designator":"U1","pads":[{"net":"GND","padNumber":"1","x":100,"y":100,"width":20,"height":20,"layer":1},{"net":"GND","padNumber":"2","x":200,"y":100,"width":20,"height":20,"layer":1}]}]}}`
+		return `{"ok":true,"result":{"components":[{"designator":"U1","pads":[{"net":"GND","padNumber":"1","x":100,"y":100,"rotation":0,"shape":["RECT",20,20,0],"width":20,"height":20,"layer":1},{"net":"GND","padNumber":"2","x":200,"y":100,"rotation":0,"shape":["RECT",20,20,0],"width":20,"height":20,"layer":1}]}]}}`
 	case "pcb.outline.get":
 		return `{"ok":true,"result":{"bbox":{"minX":0,"minY":0,"maxX":1000,"maxY":1000}}}`
 	case "pcb.pour.create":

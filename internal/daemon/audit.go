@@ -22,7 +22,10 @@ type auditEntry struct {
 	// ("<hostname>:<pid>[:<label>]", see protocol.Request.ClientID) so
 	// multi-client incidents are attributable from the audit log alone
 	// (issue #108). Empty for callers that sent no identity.
-	ClientID   string         `json:"clientId,omitempty"`
+	ClientID string `json:"clientId,omitempty"`
+	// Command is the CLI command path that issued the action (see
+	// protocol.Request.Command); empty for raw HTTP callers.
+	Command    string         `json:"command,omitempty"`
 	Action     string         `json:"action"`
 	Payload    map[string]any `json:"payload,omitempty"`
 	OK         bool           `json:"ok"`
@@ -36,7 +39,12 @@ type auditEntry struct {
 	// wrapper ("Failed to modify schematic page title block.") and post-hoc
 	// root-causing is impossible: the titleblock.modify 0/32 investigation had
 	// to reconstruct the cause from the payload alone.
-	ErrorDetail string `json:"errorDetail,omitempty"`
+	ErrorDetail              string            `json:"errorDetail,omitempty"`
+	Warnings                 []string          `json:"warnings,omitempty"`
+	Context                  *protocol.Context `json:"context,omitempty"`
+	MutationContext          *protocol.Context `json:"mutationContext,omitempty"`
+	MutationContextAvailable *bool             `json:"mutationContextAvailable,omitempty"`
+	MutationContextError     string            `json:"mutationContextError,omitempty"`
 }
 
 // EnvAuditDir overrides the audit log root, mirroring EASYEDA_WORKFLOW_DIR
@@ -119,6 +127,7 @@ func fromResponse(started time.Time, req *protocol.Request, resp *protocol.Respo
 		RequestID:  req.ID,
 		WindowID:   req.WindowID,
 		ClientID:   req.ClientID,
+		Command:    req.Command,
 		Action:     req.Action,
 		Payload:    req.Payload,
 		DurationMs: time.Since(started).Milliseconds(),
@@ -126,6 +135,11 @@ func fromResponse(started time.Time, req *protocol.Request, resp *protocol.Respo
 	if resp != nil {
 		e.OK = resp.OK
 		e.Result = resp.Result
+		e.Warnings = resp.Warnings
+		e.Context = resp.Context
+		e.MutationContext = resp.MutationContext
+		e.MutationContextAvailable = resp.MutationContextAvailable
+		e.MutationContextError = resp.MutationContextError
 		if resp.Error != nil {
 			e.ErrorCode = resp.Error.Code
 			e.ErrorMsg = resp.Error.Message

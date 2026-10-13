@@ -7,7 +7,7 @@ import (
 )
 
 // newViewCmd returns the "view" subcommand group: editor canvas view shortcuts
-// (适应全部 / 适应选中 / zoom-to / region) that map to eda.dmt_EditorControl.*.
+// (适应全部 / zoom-to / region) that map to eda.dmt_EditorControl.*.
 // These are document-agnostic — they act on the focused canvas of whichever
 // document (schematic or PCB) is active, so --window/--project picks the window.
 func newViewCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
@@ -28,18 +28,6 @@ func newViewCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 		Example: `  easyeda view fit`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return dispatch(cfg, "view.fit", window, nil, stdout, stderr)
-		},
-	})
-
-	// ── fit-selection ──────────────────────────────────────────────────────
-	// view.fit_selection — 适应选中
-	view.AddCommand(&cobra.Command{
-		Use:     "fit-selection",
-		Short:   "Zoom to fit the currently selected primitives (适应选中)",
-		Args:    cobra.NoArgs,
-		Example: `  easyeda sch select --ids id1 && easyeda view fit-selection`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return dispatch(cfg, "view.fit_selection", window, nil, stdout, stderr)
 		},
 	})
 

@@ -5,7 +5,7 @@ package app
 // shared-budget multi-net escape planner and the variable-hop fence-site
 // planner. Generic one-net path solving uses pkg/pcbrouting.
 type crystalRouteNode struct {
-	x, y, heading  int
+	x, y           int
 	cost, estimate float64
 }
 

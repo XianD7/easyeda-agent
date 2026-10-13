@@ -17,22 +17,27 @@ CLI 参数以 `easyeda sch <command> --help` 为准；电路选型依据具体�
 ```text
 官方原始快照（保留，不覆盖） + 需求/手册证据
   → 目标源数据副本（连接事实 + 核心/外围归属 + 绘制策略 + 实测几何/约束）
-  → layout-plan --zones（区内完整求解）
-  → layout-sheet-plan（完整区候选选择与平移）
-  → 数据校验 + layout-render（只转译同一份目标）
-  → compose --layout-page（固定转换） → 受保护 Apply
+  → 参数化候选几何（模型、样例或求解器生成）
+  → 数据校验 + 同源预览
+  → compose（检查与固定转换） → 受保护 Apply
   → 官方 API 原始数据回读 → 目标/实况对账 + 逐页严格门禁 → 显式保存
 ```
 
 任一阶段发现问题，保留 finding 和失败输入，回到源数据、采集器或算法修复，再从受影响
 阶段重算并重新验证下游结果。不能直接改 SVG、队列坐标或现场图面来掩盖失败。
-已有完整 Lib 可走 `lib-layout → compose` 适配入口，但也遵守同一数据闭环。
+生成方法可选择：`layout-plan --zones → layout-sheet-plan`、`lib-layout`，或直接编写
+符合下文 Lib 组合契约的 `placements/wires/flags`。模型可以设计坐标和线路，但必须引用真实
+测量、记录变换，完整保留 canonical 连接、模块归属、attachments 与画法要求，并通过
+同一 Compose 检查和现场对账。`compose --layout-page` 只接收其已支持的页面格式；
+直接 authored 几何走 `compose --from`，不伪造求解器输出或将失败诊断作为成功候选。
+求解器的姿态、搜索预算和排版策略只约束该算法，不定义全部合法设计；换生成方法不能
+豁免连接、几何或写前守卫。当前支持的输入及限制以本节格式和 CLI help 为准。
 
 - **原始观测不改写**：保存来源、工程/页、采集时间和原响应；新增测量另存，不能修改旧快照
   使其“匹配”目标。属性原文保留，规划时按下文规则筛选，不删除原始证据。
 - **目标数据是设计权威**：canonical 连接核心决定 component/pin/net/NC，显式 zone 成员与
   attachments/netPolicies 决定功能归属和画法；只有网表或旧 S0 spec 不足以证明布局意图完整。
-- **几何是可重算结果**：坐标、导线、标记、框和标题由测量与约束生成；Apply 不做第二次设计。
+- **几何是可审查的源结果**：坐标、导线、标记、框和标题由测量、约束与设计参数明确表达；Apply 不做第二次设计。
   现场数据是执行结果的权威证据，不能反向覆盖目标而掩盖偏差。
 
 ### 核心与外围不变量
@@ -153,31 +158,26 @@ Connectivity JSON 顶层为 `schemaVersion:"1.4"`、`projectId/documentId`、
 未绑定旧图兼容用 `cmp-<ref>` 初始化一次。改名之后保留旧 ID，不重新造 ID，
 不覆盖原生 `uniqueId`（它可能关联 PCB）。
 
-旧连接器可能把 16 位放置实例的 `device/footprint.uuid` 与 32 位库资产 UUID 直接比较，
-导致同名封装全部报 `package-variant mismatch`。`sch list --include-device-identity` 与
-Apply 写前/写后回读共用 CLI 兼容解析：用官方 `getDocumentFootprintSources()` 的
-FOOTPRINT `DOCHEAD` 和唯一 `META.source` 证明实例封装到库资产的出处。部分版本在
-原理图页返回空数组，此时从官方 `getProjectFile(..., 'epro2')` 的当次工程导出中只读提取
-同样的出处；前后工程/页面必须一致，源码必须唯一包含当前页面，ZIP 和解压大小受限。
-不读取历史备份替代当前状态，也不在编辑器内保存临时工程。随后请求全部
-精确 LCSC 候选，并按放置实例的库 UUID 另行搜索精确型号/稳定名称，避免个人库副本遮蔽
-系统库结果；合并候选后用 `lib_Device.get` 补齐缺失属性并核对关联封装 UUID、库来源。
-搜索范围与查询内容必须鲜读一致；查询失败、详情冲突或歧义仍拒绝，不按搜索排名选第一条。
-无供应号的自定义器件仅在供应号严格为空、精确型号或稳定名称存在时进入兼容解析；候选
-必须来自放置实例指定的库，官方详情的供应号也必须为空，原生出处、封装关联与唯一性要求相同。
-唯一匹配才恢复器件库身份；有 C 号输出 `deviceResolution.via=lcsc-footprint-source`，
-无供应号输出 `scoped-library-footprint-source`，同时保留原连接器错误。
-连接器已解析的16位实例也须经过同一份独立官方鲜读，已解析器件UUID／库必须与证明一致；
-直接原生32位库身份不走此兼容路径。源场景只在完整证明且无活动错误时使用规范身份结构，
-对账解析后器件、实际实例封装、原生来源资产及官方关联的UUID／库；完整器件／封装字段、
-属性和逐脚几何／网络仍受保护。查询可选显示名、来源读取途径、旧候选／错误与probe ID
-保留在原始捕获，不作为持久实例差异；缺证据或冲突拒绝规范化和重放。
-这证明库资产出处，仍不代替引脚、XY、连线及最终图面回读；不把相同封装名作为重建依据。
-两个 32 位资产 UUID 冲突、缺原生出处、来源不符、多候选或查询/证据缺失均拒绝，
-不能手改快照清除错误。旧连接器的兼容查询只运行固定官方读取脚本；dry-run 不派发
-该 debug 查询，也不降低身份门禁。兼容鲜读失败时门禁优先报告该次查询／上下文错误，
-原连接器的旧封装提示仍保留在原始捕获。发生工程／页面漂移先停止，重新固定上下文并鲜读；
-不得清除诊断、沿用旧证明或跳过最终校验。
+放置实例的 16 位 `device/footprint.uuid` 与 32 位库资产 UUID 属于不同身份域，不能直接
+比较，也不能按相同名称推断关联。`sch list --include-device-identity` 由 typed 连接器读取
+当前工程来源：同次 `epro2` 中唯一的 DEVICE 出处和 FOOTPRINT `META.source` 确认库来源，
+随后对指定器件调用官方 `lib_Device.get`，核对供应号、精确型号或稳定名称，以及关联封装
+UUID／库。读取前后均须核对工程和页面；不用历史备份替代当前来源。
+
+完整成功结果保留 16 位 `placedDevice`，以 32 位 `device` 提供库身份，输出
+`deviceResolution.via=native-device-source`、`sameFootprintUUID:true` 和完整
+`footprintSource`。`sch list` 和 Apply 共用 CLI 本地契约检查：实例 owner、三处器件库作用域、
+封装实例与来源、`project-epro2` 来源类型、供应号与型号／稳定名称必须一致，且不得有活动
+身份错误。CLI 接受 typed 连接器已完成的官方关联验证；返回字段不是官方详情原文副本。
+无供应号的自定义器件须保持供应号为空或缺省，并有明确型号或稳定名称。直接原生 32 位库引用
+不需要实例恢复。健康返回保持原字节，不再自动追加 `debug.exec_js` 或重复搜索器件库。
+
+缺来源、字段错型、库冲突、旧 `lcsc-footprint-source`／`scoped-library-footprint-source`
+短证明或查询失败均明确标 `unsupported`，保留原有错误，并停止依赖重建；先修复或更新
+typed 连接器后重新读取。dry-run 同样不补发 debug 查询，不能手改快照清除诊断或改用失败
+回读作为新基线。历史完整证明的场景规范化仅用于已有证据比较，不是当前身份恢复入口。
+器件、实例、封装来源、属性、姿态、逐脚网络／NC 和实际几何仍须对账；库身份成功不代替
+连接、图面以及最终保存、重载、新回读。发生上下文漂移时重新固定目标并鲜读。
 
 ## 选择转换入口
 
@@ -324,7 +324,8 @@ AI 可以直接修改源数据副本，逐条解释保留或调整的理由；�
 marker 的归属和跨区策略，保持 pin→net/NC 与原本必需的真实直连，随后重新求解及回读。
 本检查不自动修改 JSON、生成执行队列、认可 AI 猜测或替代布局/电气验收。
 
-完整效果必须由整份 `sch layout-plan --zones` 成功结果生成，再交纸张规划和固定渲染器。
+采用 zones 求解器时，完整效果须由整份 `sch layout-plan --zones` 成功结果生成，再交纸张规划和固定渲染器。
+其他几何生成方式遵守[数据驱动基准](#数据驱动架构基准)，无需伪造 zones 输出。
 逐区捕获错误的诊断输出不能拼装为完整候选；保留诊断供修算法，但不以原测量占位替代失败区域。
 发布本地效果时记录输入/输出哈希、源码提交、命令与覆盖检查；这不是 Git tag 或安装包发布。
 
@@ -668,7 +669,11 @@ easyeda sch compose --from composition.json --out plan.json
 V4 完全未接线页可能无法导出网表，此时 `sch list` 的 `pinNetsAvailable:false`、逐脚
 `net:null` 不能直接解释为开放引脚。仅当完整页面图元清单证明 0 导线、0 标签、0 其他
 图形，所有物理引脚可读且 `noConnected:false` 时，保留实例的 Compose 才允许从此状态
-开始接线；任何已有图元、NC 或缺测仍拒绝。部分官方库实例的原生 `uniqueId` 为空串，
+开始接线；任何已有图元、NC 或缺测仍拒绝。此路径从原始快照的副本构建已知悬空
+连接模型，受保护的源检查步骤保留原生网表错误、`false/null` 和可机读
+`sourceConnectivityProvenance`（完整空图面判据、原始快照 SHA-256 与物理引脚数）。
+它不把原生网表改称可用，也不放宽普通连接模型导出、位号修复或连接检查点的缺测拒绝。
+部分官方库实例的原生 `uniqueId` 为空串，
 须原样保留，并用图元 ID、器件身份及全部实例字段在写入后回读核对。保存重载后宿主可能
 为这些实例分配 `uniqueId`，重算队列必须使用重载后的新鲜快照。
 
@@ -747,7 +752,7 @@ source 与 page 的纸张、内框和禁放区须精确一致；实际 sheet bbo
 dev.5 的整页 `compose --replace` 重建没有此保全契约，不可用于声称无损重排。
 
 dev.8 开发入口为 `compose --replace --preserve-instances`：只接受同页、相同完整器件
-集合及可核验的稳定 ID/位号/库身份/引脚连接与 NC；源不一致或字段缺测时写前拒绝。
+集合及可核验的稳定 ID/位号/库身份；默认还要求引脚连接与 NC 相同，源不一致或字段缺测时写前拒绝。
 生成器须保留实例，只清除已授权重建范围内的线路、标记和页面图形，再按同一份算法
 目标移动原器件、接线与画框。纸张和器件所属属性不清除，不手改队列绕过保护。
 前检、清理后的检查点、移动后的检查点及末态都须核对实例和属性；布局可变字段与
@@ -756,12 +761,29 @@ dev.8 开发入口为 `compose --replace --preserve-instances`：只接受同页
 和待创建位号的不存在性；不得在该跨页步骤重复请求器件库身份、bbox 或引脚。目标页随后
 单独读取完整身份、几何、引脚和导线基线。两个守卫职责不同，不能因精简跨页读取而删掉
 目标页的完整实例保全检查。
+
+需要在保留器件实例的同时修改电路时，显式增加 `--connectivity-edits pin-delta.json`。
+输入 `schemaVersion:1`、`beforeSha256`、`sourceSha256`，后两者分别绑定 `--before` 和
+`--from` 文件的原始字节 SHA256；`pins` 必须恰好枚举所有网络或 NC 变化，不能遗漏、重复或
+列入未变化的脚。每行格式如下（`net:""` 和 `noConnected:false` 必须显式填写）：
+
+```json
+{"componentId":"stable-U1","ref":"U1","pinNumber":"1","pinName":"VDD",
+ "before":{"net":"","noConnected":true},"after":{"net":"+3V3","noConnected":false}}
+```
+
+编译器核对每脚真实旧值、目标值与 pinName；该入口不允许更换器件、重命名引脚、改属性或伪造
+原始快照。生成队列保留审计数据及完整 source scene 守卫，解除旧 NC 使用显式 typed 动作，
+所有目标 NC 回读通过后才能接线，末态仍核对全部引脚与网络。输入哈希或现场状态变化后应重新
+生成审计数据和队列。这里只验证工具表达能力，不替代电路审查及现场保存、重载、新回读。
 此段是实现及验收契约；开发包安装不等于现场已通过，以实际 Apply、保存重开和回读为准。
 当前 CLI 的保全重建队列仅向 `schematic.primitives.delete` 传入 fresh 完整 inventory 中明确
 枚举的 wire、netflag/netport/netlabel、矩形框及 text ID；不传器件、纸张、引脚或属性 ID。
 不支持的 bus、arc、circle、polygon、嵌入对象、short symbol 及无法归属的属性会拒绝生成。
 删除后核对完整剩余 inventory，移动前后持续核对原生 pin ID、pin `otherProperty`、NC 和
 器件/引脚/纸张所属属性；属性随器件变化的 X/Y/Rotation 单独排除，其内容、可见性及样式仍须一致。
+同一显式删除与剩余 inventory 守卫也用于 `paperless:true` 的已有图面，不要求先清空页面；
+它仍要求真实 0 个 sheet，不能退回广义清页、放宽未知图形或借未接线分支处理有线页面。
 这一 CLI 路径已有离线回归，尚未证明现场 Apply 或 #267 connector 修复通过。
 当前清理子步骤的 pin-owned 属性保护尚有 #267 缺口；含广义保留器件清页的重建队列暂停执行，
 限制与局部恢复条件见 [原理图清理说明](schematic.md)。已完全匹配的验证分支、真实零导线/零图形的
@@ -773,13 +795,19 @@ easyeda sch compose --from composition.json --out composition-plan.json
 
 # 读取将要操作的已有页
 easyeda sch list --project <project> --page <page> --stay \
-  --include-pins --include-bbox --include-wires --include-device-identity > before.json
+  --include-pins --include-bbox --include-wires --include-device-identity \
+  --include-page-primitives > before.json
 
 # 已授权重建不同图面时加 --replace；已匹配图面不需要该参数
 easyeda sch compose --from composition.json --out composition-plan.json \
   --before before.json --replace --playbook apply.json
 easyeda sch apply apply.json --dry-run
 easyeda sch apply apply.json --yes
+
+# 保留已放置的同一批器件并按逐脚审计修改电路；两个哈希对应上述原始文件
+easyeda sch compose --from composition.json --out composition-plan.json \
+  --before before.json --replace --preserve-instances \
+  --connectivity-edits pin-delta.json --playbook apply.json
 ```
 
 生成队列已固定工程与页 UUID；执行时沿用其目标，不用名称覆盖 `--project/--doc`。

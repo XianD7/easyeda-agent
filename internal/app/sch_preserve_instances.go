@@ -98,16 +98,25 @@ func checkSchPreservedSource(want, live map[string]any) error {
 }
 
 type schPreservedParts struct {
-	Parts           map[string]map[string]any
-	Instances       map[string]map[string]any
-	IDs             []string
-	Scene           map[string]any
-	OwnedAttributes *schOwnedAttributesExpectation
+	Parts                        map[string]map[string]any
+	Instances                    map[string]map[string]any
+	IDs                          []string
+	Scene                        map[string]any
+	OwnedAttributes              *schOwnedAttributesExpectation
+	SourceConnectivityProvenance *schUnwiredConnectivityProvenance
 }
 
-// Preserve mode is a layout/route change only, not a device or connectivity
-// replacement. It must prove complete same-page identity before any queue exists.
-func prepareSchPreservedParts(p *schCompositionPlan, before []byte, allowUnwired bool) (*schPreservedParts, error) {
+// Preserve mode defaults to layout/route changes only. An explicit audited pin
+// delta may change connectivity, never device or persistent instance identity.
+func prepareSchPreservedParts(p *schCompositionPlan, before []byte, allowUnwired bool, audit ...*schConnectivityEdits) (*schPreservedParts, error) {
+	var edits map[schConnectivityEditKey]schPinConnectivityEdit
+	if len(audit) > 0 && audit[0] != nil {
+		var err error
+		edits, err = audit[0].index(before)
+		if err != nil {
+			return nil, err
+		}
+	}
 	baseline, err := parseSchDesignatorBaseline(before, allowUnwired)
 	if err != nil {
 		return nil, err
@@ -119,6 +128,7 @@ func prepareSchPreservedParts(p *schCompositionPlan, before []byte, allowUnwired
 		return nil, fmt.Errorf("preserve-instances requires the same complete component set")
 	}
 	out := &schPreservedParts{Parts: map[string]map[string]any{}, Instances: map[string]map[string]any{}}
+	out.SourceConnectivityProvenance = baseline.SourceConnectivityProvenance
 	byID := map[string]connectivity.Component{}
 	for _, c := range p.Connectivity.Components {
 		byID[c.ID] = c
@@ -186,12 +196,22 @@ func prepareSchPreservedParts(p *schCompositionPlan, before []byte, allowUnwired
 				return nil, fmt.Errorf("%s unknown/duplicate physical pin %s", c.Ref, number)
 			}
 			seen[number] = true
-			if name, known := q["pinName"].(string); !known || name != expected.Name || (!allowUnwired && (q["noConnected"] != expected.NoConnected || q["net"] != desired[id][number])) {
+			if name, known := q["pinName"].(string); !known || name != expected.Name {
+				return nil, fmt.Errorf("%s.%s source pinName differs from target; preservation cannot change pin names", c.Ref, number)
+			}
+			if edits != nil {
+				if err := checkSchPinConnectivityEdit(edits, id, c.Ref, number, expected.Name, q, desired[id][number], expected.NoConnected); err != nil {
+					return nil, err
+				}
+			} else if !allowUnwired && (q["noConnected"] != expected.NoConnected || q["net"] != desired[id][number]) {
 				return nil, fmt.Errorf("%s.%s source name/net/NC differs from target; preserve-instances cannot change circuit", c.Ref, number)
 			}
 		}
 		out.Parts[c.Ref], out.Instances[c.Ref] = raw, instance
 		out.IDs = append(out.IDs, pid)
+	}
+	if len(edits) != 0 {
+		return nil, fmt.Errorf("connectivity-edits: %d unknown or unused pin delta(s)", len(edits))
 	}
 	sort.Strings(out.IDs)
 	page, err := schComposeProtectedPage(baseline.Result)
@@ -238,7 +258,10 @@ func schComposeFullyUnwired(result map[string]any) bool {
 	if !ok || result["wiresAvailable"] != true {
 		return false
 	}
-	netsAvailable := result["pinNetsAvailable"] == true
+	netsAvailable, netsKnown := result["pinNetsAvailable"].(bool)
+	if !netsKnown {
+		return false
+	}
 	for _, item := range parts {
 		part, ok := item.(map[string]any)
 		if !ok {
@@ -256,7 +279,11 @@ func schComposeFullyUnwired(result map[string]any) bool {
 		}
 		for _, item := range pins {
 			pin, ok := item.(map[string]any)
-			if !ok || pin["noConnected"] != false || (netsAvailable && pin["net"] != "") || (!netsAvailable && pin["net"] != nil) {
+			if !ok {
+				return false
+			}
+			_, netPresent := pin["net"]
+			if !netPresent || pin["noConnected"] != false || (netsAvailable && pin["net"] != "") || (!netsAvailable && pin["net"] != nil) {
 				return false
 			}
 		}

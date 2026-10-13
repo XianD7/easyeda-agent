@@ -306,7 +306,11 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	// than released inline so no early return can leak the counter.
 	defer s.beginClientAction(req.WindowID)()
 	guardedDispatch := func(ctx context.Context, req protocol.Request) (*protocol.Response, error) {
-		return s.forwardSchematicGeometry(ctx, req, target.dispatch)
+		resp, err := s.forwardSchematicGeometry(ctx, req, target.dispatch)
+		// Normalize before adaptive health observes the outcome, so persistence
+		// failures cannot leave a green save bucket in /health.
+		normalizeSaveResponse(&req, resp)
+		return resp, err
 	}
 	resp, err, _ := forwardWithAdaptiveRetry(ctx, req, guardedDispatch, hooks)
 	if err != nil {
@@ -364,13 +368,13 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	// mutating actions get the fake-failure-law advice (verify by light read
 	// before resending). Nothing is retried here. See writehealth.go.
 	s.writeHealth.annotateDegraded(&req, resp)
-	s.audit.Append(fromResponse(started, &req, resp))
 	// After a successful content-changing action, arm a debounced autosave so the
 	// work reaches disk without the agent having to remember to save (no-op when
 	// autosave is disabled or the action doesn't mutate). See autosave.go.
 	if resp.OK {
-		s.maybeAutosave(&req)
+		s.maybeAutosave(&req, resp, started)
 	}
+	s.audit.Append(fromResponse(started, &req, resp))
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -518,6 +522,7 @@ func (s *Server) systemHealthResponse(id string) protocol.Response {
 			"version":   s.opts.Version,
 			"windows":   windows,
 			"windowIds": ids,
+			"autosave":  s.autosave.snapshot(),
 		},
 	}
 }

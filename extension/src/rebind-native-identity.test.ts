@@ -202,6 +202,7 @@ function facts(error: any): any {
 test('native16 rebind proves sparse original and fresh replacement against their separate32 sources', async t => {
 	const f = harness(), result = await rebind(t, f);
 	assert.equal(result.result.mode, 'in-place'); assert.equal(result.result.verified, true);
+	assert.equal(result.mutationContextAvailable, true);
 	assert.deepEqual(result.result.originalPlacedReference, { uuid: OLD_FP_INSTANCE, libraryUuid: DEVICE_LIBRARY, name: 'Synthetic old package' });
 	assert.deepEqual(result.result.originalLibraryReference, OLD_REF);
 	assert.deepEqual(result.result.device, { uuid: DEVICE, libraryUuid: DEVICE_LIBRARY });

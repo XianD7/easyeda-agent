@@ -10,49 +10,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 )
-
-// tbPreserve 原样回传一个**没被修改**的明细项,但把数字型字符串还原成数字。
-//
-// **这条是数据损坏修复**:`Title Block` / `Border` 这类结构开关读回来是字符串 `"1"`,
-// 整体回传时平台把它解析成 0 —— 实测一次写图签就把**图框和明细表整个关掉**,
-// sheet 图元的 bbox 塌成全零,`zone-plan`/`layout-lint` 的 sheet-check 当场不可用。
-// 页面看上去还在,判据却瞎了,而且没有任何报错。
-func tbPreserve(v any) any {
-	m, ok := v.(map[string]any)
-	if !ok {
-		return v
-	}
-	out := map[string]any{}
-	for k, vv := range m {
-		out[k] = vv
-	}
-	if sv, isStr := out["value"].(string); isStr {
-		if n, err := strconv.ParseFloat(strings.TrimSpace(sv), 64); err == nil && sv != "" {
-			out["value"] = n
-		}
-	}
-	return out
-}
-
-// 这里曾有 tbStructuralKeys / tbKeepStructural:整包回传时把 `Title Block`/`Border`
-// 两个结构开关按住原值,因为读回来的 "1" 被平台解析成 0 会把图框整个关掉
-// (2026-08-15 esp32Mini E2E:四页图纸静默丢失)。
-//
-// **2026-08-26 连同整包回传一起删除。** 那套保护是在给一个本就不该做的动作打补丁:
-// 整包回传才是图框损毁的成因(#186 —— `Device`/`Symbol` 的符号名被灌进 sheet 的
-// UUID 引用位)。现在只传用户点名的文本项,结构键根本不出现在 payload 里,也就
-// 不需要"按住"它们;连接器侧还有一道过滤兜底。**别再把它加回来** —— 要加回来
-// 就意味着又在整包回传了。
-// tbBoolOr 把读回来的 null / 非布尔折成一个确定的布尔。
-func tbBoolOr(v any, fallback bool) bool {
-	if b, ok := v.(bool); ok {
-		return b
-	}
-	return fallback
-}
 
 // schTitleBlockMerge 读回当前页的全量明细项,把用户的 patch 合并进去。
 //

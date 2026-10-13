@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -480,7 +479,7 @@ func noteExpandFloorY(rect layoutBBox, neighbors []layoutBBox, safe *layoutBBox,
 //
 // ok=false = 这一区在可扩边界内结构上装不下这条说明,即设计正本第 8 条的
 // **blocked**。**调用方必须如实报出来**(是谁、每条边各卡在哪、出路是区内收敛
-// 还是拆页,见 noteBlockedDetail),不许静默把说明踢到框外、也不许把它挪到框顶
+// 还是拆页),不许静默把说明踢到框外、也不许把它挪到框顶
 // 假装成功 —— 那正是这条路径两次要根治的症状。
 func reserveZoneNoteArea(rect layoutBBox, pins zoneNotePins, w, h float64, obstacles []layoutBBox,
 	sheet layoutBBox, keepout *layoutBBox, neighbors []layoutBBox, gutter float64) (outRect, band layoutBBox, ax, ay float64, ok bool) {
@@ -536,35 +535,6 @@ func reserveZoneNoteArea(rect layoutBBox, pins zoneNotePins, w, h float64, obsta
 	// 这里**没有**「翻到框顶」那条退路:说明带恒在框底(版式契约),放不下就报。
 	outRect.MinY = math.Min(outRect.MinY, math.Max(base, floor))
 	return outRect, bandOf(outRect), 0, 0, false
-}
-
-// noteBlockedDetail 是「这一区装不下这条说明」的**唯一**归因文本 —— 设计正本
-// 第 8 条:blocked 必须报出**是谁**、**每条边各卡在哪**、以及出路。`sch note`
-// 落点侧的警告和 `sch check` 的 note-outside-zone 报文共用它;两处各写一遍
-// 就是又一把尺(本仓的复发病)。
-//
-// 三档归因,与 reserveZoneNoteArea 的两个自由度一一对应:
-//   - 横向差:框/带宽装不下 requiredNoteWidth(w),而横向扩边被邻框/纸边顶住;
-//   - 纵向差:带高装不下 requiredNoteBand(h),而向下扩边被 noteExpandFloorY 的
-//     底线(纸边 / 图签安全带 / 邻框)顶住 —— 框底一寸都不许探进图签;
-//   - 两条边尺寸都够却仍放不下:带内每个候选位置都被图元/图签禁区/纸边占着。
-func noteBlockedDetail(zone string, band layoutBBox, w, h float64) string {
-	bw, bh := band.MaxX-band.MinX, band.MaxY-band.MinY
-	var edges []string
-	if need := requiredNoteWidth(w); need-bw > acOverlapEps {
-		edges = append(edges, fmt.Sprintf("横向差 %.0f(带宽 %.0f,需要 %.0f)", need-bw, bw, need))
-	}
-	if need := requiredNoteBand(h); need-bh > acOverlapEps {
-		edges = append(edges, fmt.Sprintf("纵向差 %.0f(带高 %.0f,需要 %.0f)", need-bh, bh, need))
-	}
-	if len(edges) == 0 {
-		edges = append(edges, fmt.Sprintf("带 %.0f×%.0f 尺寸本身够,但带内每个候选落点都被图元/图签禁区/纸边占住", bw, bh))
-	}
-	return fmt.Sprintf("区 %q 在可扩边界内装不下这条说明(%.0f×%.0f,说明带只有 %.0f×%.0f):%s —— "+
-		"说明带恒在框底(区名左上、说明左下),不会翻到框顶,所以这里如实报 blocked。"+
-		"出路二选一:① 区内收敛(`sch zone-arrange` 收紧本区 / `sch group-move` 把邻近模块挪开腾出横向纵向空间 / "+
-		"缩短文字或减小 --font-size);② 拆页(`sch page-new` 后把本区搬过去)",
-		zone, w, h, bw, bh, strings.Join(edges, ";"))
 }
 
 // snapNote 把锚点吸到 5 格网格(与连接网格同口径,避免半格漂移)。

@@ -226,24 +226,13 @@ func TestSchematicIdentityCompatCustomNoSupplierExactProof(t *testing.T) {
 }
 
 func TestSchematicIdentityCompatCustomNoSupplierSharedRead(t *testing.T) {
-	original, hit, _ := identityCompatCustomFixture("RT0603BRD07583KL", false)
+	original := typedIdentityFixture(true)
 	before, _ := json.Marshal(original)
-	cfg, _, cleanup := newBlockApplyTestDaemon(t, func(call blockApplyTestCall) string {
-		if call.Action == "schematic.components.list" {
-			return identityCompatEnvelope(map[string]any{"components": []any{original}}, "page")
+	cfg, daemon, cleanup := newBlockApplyTestDaemon(t, func(call blockApplyTestCall) string {
+		if call.Action != "schematic.components.list" {
+			t.Fatalf("unexpected additional action %s", call.Action)
 		}
-		if call.Action != "debug.exec_js" {
-			t.Fatalf("unexpected action %s", call.Action)
-		}
-		code, _ := call.Payload["code"].(string)
-		if !strings.Contains(code, "const ids = [];") {
-			t.Fatal("empty supplier sent to LCSC lookup")
-		}
-		p := identityCompatProof(hit)
-		p.Query.LCSCIDs = []string{}
-		p.Query.Searches = schematicIdentitySearches([]map[string]any{original})
-		p.NativeFootprints[0].MetadataLines[1] = strings.Replace(p.NativeFootprints[0].MetadataLines[1], "|system", "|personal", 1)
-		return identityCompatEnvelope(map[string]any{"value": p}, "page")
+		return identityCompatEnvelope(map[string]any{"components": []any{original}}, "page")
 	})
 	defer cleanup()
 	runner := applyRunner{cfg: cfg, window: "w1"}
@@ -252,16 +241,12 @@ func TestSchematicIdentityCompatCustomNoSupplierSharedRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := result.(map[string]any)["components"].([]any)[0].(map[string]any)
-	if schematicIdentityString(schematicIdentityMap(c, "device"), "uuid") != hit.UUID || c["deviceIdentityError"] != nil {
-		t.Fatalf("custom identity unresolved %+v", c)
-	}
-	resolution := schematicIdentityMap(c, "deviceResolution")
-	if resolution["via"] != "scoped-library-footprint-source" || resolution["lcsc"] != nil || resolution["sameFootprintUUID"] != true {
-		t.Fatalf("custom proof provenance inaccurate %+v", resolution)
+	if !reflect.DeepEqual(c, original) {
+		t.Fatalf("typed custom identity changed: %+v", c)
 	}
 	after, _ := json.Marshal(original)
-	if string(before) != string(after) {
-		t.Fatal("custom read adapter mutated caller snapshot")
+	if string(before) != string(after) || len(daemon.snapshot()) != 1 {
+		t.Fatal("custom identity read mutated input or dispatched an extra probe")
 	}
 }
 
@@ -297,63 +282,31 @@ func identityCompatEnvelope(result any, doc string) string {
 	b, _ := json.Marshal(map[string]any{"ok": true, "id": "probe-test", "result": result, "context": map[string]any{"projectUuid": "project", "documentUuid": doc, "documentType": "schematic"}})
 	return string(b)
 }
-func identityCompatProof(hit schematicIdentityCandidate) schematicIdentityProbe {
-	var proof schematicIdentityProbe
-	proof.SchemaVersion = 1
-	proof.Query.LCSCIDs = []string{"C6186"}
-	proof.Query.AllowMultiMatch = true
-	proof.Query.Searches = []schematicIdentitySearch{{Query: "AMS1117-3.3", LibraryUUID: "system"}}
-	proof.Candidates = []schematicIdentityCandidate{hit}
-	proof.NativeFootprints = []schematicNativeFootprint{identityCompatNativeFootprint()}
-	return proof
-}
 
 func TestSchematicIdentityCompatSharedDispatchAndApplyRead(t *testing.T) {
-	original, hit := identityCompatFixture()
-	before, _ := json.Marshal(original)
+	original := typedIdentityFixture(false)
 	cfg, daemon, cleanup := newBlockApplyTestDaemon(t, func(call blockApplyTestCall) string {
-		switch call.Action {
-		case "schematic.components.list":
-			return identityCompatEnvelope(map[string]any{"components": []any{original}}, "page")
-		case "debug.exec_js":
-			code, _ := call.Payload["code"].(string)
-			if !strings.Contains(code, "getByLcscIds(ids, undefined, true)") || !strings.Contains(code, "lib_Device.get(") {
-				t.Error("probe did not collect complete official identity evidence")
-			}
-			for _, bad := range []string{".create(", ".modify(", ".delete(", ".open("} {
-				if strings.Contains(code, bad) {
-					t.Error("read probe contains a mutation")
-				}
-			}
-			return identityCompatEnvelope(map[string]any{"value": identityCompatProof(hit)}, "page")
-		default:
-			t.Errorf("unexpected action %s", call.Action)
-			return ""
+		if call.Action != "schematic.components.list" {
+			t.Fatalf("unexpected additional action %s", call.Action)
 		}
+		return identityCompatEnvelope(map[string]any{"components": []any{original}}, "page")
 	})
 	defer cleanup()
-	// Both raw stdout dispatch (sch list) and Apply's own runAction pass through
-	// the shared choke point. No command can hydrate only a user-supplied baseline.
 	var out, stderr bytes.Buffer
 	if err := dispatch(cfg, "schematic.components.list", "w1", map[string]any{"includeDeviceIdentity": true}, &out, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	var envelope map[string]any
-	_ = json.Unmarshal(out.Bytes(), &envelope)
+	if err := json.Unmarshal(out.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
 	check := func(result map[string]any) {
 		c := result["components"].([]any)[0].(map[string]any)
-		if schematicIdentityString(schematicIdentityMap(c, "device"), "uuid") != hit.UUID {
-			t.Fatalf("identity unresolved %+v", c)
+		if !reflect.DeepEqual(c, original) {
+			t.Fatal("shared read adapter changed complete typed evidence")
 		}
-		if _, ok := c["deviceIdentityError"]; ok {
-			t.Fatal("resolved identity retained active error")
-		}
-		resolution := schematicIdentityMap(c, "deviceResolution")
-		if resolution["via"] != "lcsc-footprint-source" || resolution["sameFootprintUUID"] != true {
-			t.Fatalf("fallback strength hidden %+v", resolution)
-		}
-		if !reflect.DeepEqual(c["pins"], original["pins"]) || c["x"] != original["x"] || c["y"] != original["y"] {
-			t.Fatal("read adapter changed circuit data")
+		if _, err := measuredSchematicDevice("U1", c); err != nil {
+			t.Fatal(err)
 		}
 	}
 	check(schematicIdentityMap(envelope, "result"))
@@ -363,63 +316,24 @@ func TestSchematicIdentityCompatSharedDispatchAndApplyRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(result.(map[string]any))
-	after, _ := json.Marshal(original)
-	if string(before) != string(after) {
-		t.Fatal("mutated caller snapshot")
-	}
-	if calls := daemon.snapshot(); len(calls) != 4 {
-		t.Fatalf("expected one official probe per fresh list (no stale cache): %+v", calls)
+	if calls := daemon.snapshot(); len(calls) != 2 {
+		t.Fatalf("expected one typed call per list: %+v", calls)
 	}
 }
 
 func TestSchematicIdentityCompatFailureNeverWeakensGuard(t *testing.T) {
-	for _, scenario := range []string{"wrong-context", "missing-candidates", "missing-all-match-proof", "missing-scoped-search", "wrong-scoped-library", "ambiguous", "probe-error", "probe-context-error", "missing-native-source", "bad-native-source", "source-error", "dry-run"} {
-		t.Run(scenario, func(t *testing.T) {
-			original, hit := identityCompatFixture()
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprint(dryRun), func(t *testing.T) {
+			original, _ := identityCompatFixture()
 			cfg, daemon, cleanup := newBlockApplyTestDaemon(t, func(call blockApplyTestCall) string {
-				if call.Action == "schematic.components.list" {
-					return identityCompatEnvelope(map[string]any{"components": []any{original}}, "page")
+				if call.Action != "schematic.components.list" {
+					t.Fatalf("unsupported identity dispatched %s", call.Action)
 				}
-				if call.Action != "debug.exec_js" {
-					t.Fatalf("unexpected action %s", call.Action)
-				}
-				p := identityCompatProof(hit)
-				doc := "page"
-				switch scenario {
-				case "wrong-context":
-					doc = "other-page"
-				case "missing-candidates":
-					p.Candidates = nil
-				case "missing-all-match-proof":
-					p.Query.AllowMultiMatch = false
-				case "missing-scoped-search":
-					p.Query.Searches = nil
-				case "wrong-scoped-library":
-					p.Query.Searches[0].LibraryUUID = "personal"
-				case "ambiguous":
-					other := hit
-					other.UUID = strings.Repeat("c", 32)
-					detail := *hit.Device
-					detail.UUID = other.UUID
-					other.Device = &detail
-					p.Candidates = append(p.Candidates, other)
-				case "missing-native-source":
-					p.NativeFootprints = nil
-				case "bad-native-source":
-					p.NativeFootprints[0].MetadataLines[1] = strings.Replace(p.NativeFootprints[0].MetadataLines[1], "20c29e37a9b84b4197418483096f9c05", strings.Repeat("f", 32), 1)
-				case "source-error":
-					p.SourceError = "native source unavailable"
-				case "probe-error":
-					return `{"ok":false,"error":{"code":"FAILED","message":"offline"}}`
-				case "probe-context-error":
-					return `{"ok":false,"error":{"code":"EDA_CALL_FAILED","message":"exec_js failed.","detail":"project/document changed during official identity reads"}}`
-				}
-				return identityCompatEnvelope(map[string]any{"value": p}, doc)
+				return identityCompatEnvelope(map[string]any{"components": []any{original}}, "page")
 			})
 			defer cleanup()
-			if scenario == "dry-run" {
-				restore := setDispatchDryRun(true)
-				defer restore()
+			if dryRun {
+				defer setDispatchDryRun(true)()
 			}
 			res, err := requestAction(cfg, "schematic.components.list", "w1", map[string]any{"includeDeviceIdentity": true})
 			if err != nil {
@@ -427,16 +341,13 @@ func TestSchematicIdentityCompatFailureNeverWeakensGuard(t *testing.T) {
 			}
 			c := res.Result["components"].([]any)[0].(map[string]any)
 			if _, err := measuredSchematicDevice("U1", c); err == nil {
-				t.Fatalf("%s escaped device guard: %+v", scenario, c)
-			} else if scenario == "probe-context-error" &&
-				(!strings.Contains(err.Error(), "project/document changed during official identity reads") || strings.Contains(err.Error(), "package-variant mismatch")) {
-				t.Fatalf("fresh context failure was hidden behind obsolete connector diagnosis: %v", err)
+				t.Fatal("unsupported legacy identity escaped replay guard")
 			}
-			if c["deviceIdentityCompatibilityError"] == nil {
-				t.Fatalf("failure reason was hidden: %+v", c)
+			if !strings.Contains(schematicIdentityString(c, "deviceIdentityCompatibilityError"), "unsupported") || c["deviceIdentityError"] != original["deviceIdentityError"] {
+				t.Fatal("unsupported result lost new or original diagnostics")
 			}
-			if scenario == "dry-run" && len(daemon.snapshot()) != 1 {
-				t.Fatalf("dry-run ran debug probe %+v", daemon.snapshot())
+			if len(daemon.snapshot()) != 1 {
+				t.Fatal("legacy identity dispatched an implicit probe")
 			}
 		})
 	}

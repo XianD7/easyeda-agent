@@ -61,6 +61,10 @@ var errActionFailed = errors.New("action returned ok=false")
 // action subcommands. The fields are bound directly to Cobra persistent
 // flags so they are populated before any RunE executes.
 type appConfig struct {
+	// command is the invoking CLI command path (e.g. "easyeda sch connect"),
+	// sent with every action so the audit log can attribute calls to the
+	// subcommand that issued them — the evidence for pruning unused commands.
+	command string
 	host    string
 	ports   string // "60832-60841"
 	project string // optional stable routing hint (project name/uuid) → windowId
@@ -118,6 +122,7 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		OK     bool `json:"ok"`
 		Result struct {
 			PrimitiveID any    `json:"primitiveId"`
+			Saved       any    `json:"saved"`
 			Imported    bool   `json:"imported"`
 			Confirm     string `json:"confirm"`
 			OK          *bool  `json:"ok"`
@@ -168,11 +173,15 @@ func dispatchTimed(cfg *appConfig, action, window string, payload any, timeout t
 		return libraryWriteResultError(action, envelope.Result, respBody)
 	}
 	switch action {
+	case "schematic.save", "pcb.save":
+		if parsed.Result.Saved != true || parsed.Result.Partial {
+			return fmt.Errorf("%s: save was not confirmed (boolean saved:true required; saved=%#v, partial=%t); preserve the returned response and current document state before retrying", action, parsed.Result.Saved, parsed.Result.Partial)
+		}
 	case "pcb.import_changes":
 		return pcbImportResultError(action, map[string]any{"imported": parsed.Result.Imported,
 			"confirm": parsed.Result.Confirm, "verified": parsed.Result.Verified != nil && *parsed.Result.Verified,
 			"partial": parsed.Result.Partial})
-	case "pcb.pour.create":
+	case "pcb.pour.create", "pcb.fill.create":
 		return pourBoundaryError(action, map[string]any{"primitiveId": parsed.Result.PrimitiveID,
 			"verified": parsed.Result.Verified != nil && *parsed.Result.Verified, "partial": parsed.Result.Partial})
 	case "schematic.page.rename":
@@ -207,20 +216,24 @@ func pcbImportResultError(action string, result map[string]any) error {
 
 // A pour create echo is not evidence of a persisted boundary. Keep the created
 // ID in the error so callers can account for a partial write without replaying it.
-type unverifiedPourBoundaryError struct{ primitiveID string }
+type unverifiedPourBoundaryError struct{ primitiveID, action string }
 
 func (e *unverifiedPourBoundaryError) Error() string {
-	return fmt.Sprintf("pcb.pour.create: boundary %q not verified; inspect returned IDs and fresh state before retrying", e.primitiveID)
+	action := e.action
+	if action == "" {
+		action = "pcb.pour.create"
+	}
+	return fmt.Sprintf("%s: boundary %q not verified; inspect returned IDs and fresh state before retrying", action, e.primitiveID)
 }
 
 func pourBoundaryError(action string, result map[string]any) error {
-	if action != "pcb.pour.create" {
+	if action != "pcb.pour.create" && action != "pcb.fill.create" {
 		return nil
 	}
 	verified, _ := result["verified"].(bool)
 	partial, _ := result["partial"].(bool)
 	if !verified || partial || asString(result["primitiveId"]) == "" {
-		return &unverifiedPourBoundaryError{primitiveID: asString(result["primitiveId"])}
+		return &unverifiedPourBoundaryError{primitiveID: asString(result["primitiveId"]), action: action}
 	}
 	return nil
 }
@@ -1110,6 +1123,9 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 	// Identify this client process for audit attribution and the daemon's
 	// concurrent-writer advisory (issue #108).
 	body["clientId"] = cliClientID()
+	if cfg.command != "" {
+		body["command"] = cfg.command
+	}
 	// Send the round-trip budget: the daemon shortens its connector wait to
 	// (budget - grace) so it answers with a structured DISPATCH_FAILED *before*
 	// this HTTP client times out — instead of both sides hanging to their own
@@ -1179,9 +1195,9 @@ func postAction(cfg *appConfig, action, window string, payload any, timeout time
 	// any later judgement has a baseline without every command threading one
 	// through by hand (conn_seq.go). Read-only bookkeeping; never fails a call.
 	connSeqObserve(window, cfg.project, respBody)
-	// Old connectors confuse placed footprint handles with library UUIDs.
-	// Adapt fresh identity evidence for every consumer, including Apply guards.
-	return hydrateSchematicIdentityCompatibility(cfg, action, window, payload, respBody, timeout)
+	// Validate the typed identity contract without an implicit second request.
+	// Unsupported old connector evidence remains explicit for every consumer.
+	return validateSchematicIdentityRead(cfg, action, payload, respBody)
 }
 
 // parsePortRange parses "start-end" into two ints.

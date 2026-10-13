@@ -629,7 +629,7 @@ func bslSolveAround(
 // bslRoleReach 是某个角色的 marker 最远能伸出多少 —— 取它沾到的所有网里标签最宽的
 // 那条。**flow 间距必须按两边各自的实测标签算**:此前两处调用都传 bslReach("")
 // (空网名 = 最窄标签),于是 J1 与 D1 之间只留了最小间距,两边的标签在中间撞成一团
-// (`sch clusters` 图元级判据抓到 J1 ↔ D1 重叠 24×11)。网名用与 bslNetOfPins 同一个
+// (`sch clusters` 图元级判据抓到 J1 ↔ D1 重叠 24×11)。网名用
 // 代理口径(PORT 名优先,否则引脚名),块模板里本来就没有实例化后的网名。
 func bslRoleReach(nets [][]string, role string) float64 {
 	max := bslReach("")
@@ -683,72 +683,6 @@ func bslRoleReachFrom(plan *bapPlan) map[string]float64 {
 		}
 	}
 	return out
-}
-
-// bslRoleNameHalf 是某个角色的 marker 名字横向占地的一半 —— 名字以桩线为中心左右
-// 各半,所以判两件挨不挨得住,要各让出半个名字宽。宽度口径与 acPortTotalLen 的
-// 名字部分一致(6×字数 + 8),同一把尺。
-func bslRoleNameHalf(nets [][]string, role string) float64 {
-	max := 0.0
-	for _, net := range nets {
-		name, has := "", false
-		for _, m := range net {
-			if strings.HasPrefix(m, "PORT:") {
-				if name == "" {
-					name = strings.TrimPrefix(m, "PORT:")
-				}
-				continue
-			}
-			r, pin, ok := splitBlockPinRef(m)
-			if !ok {
-				continue
-			}
-			if r == role {
-				has = true
-				if name == "" {
-					name = pin
-				}
-			}
-		}
-		if !has {
-			continue
-		}
-		if w := (6*float64(len(name)) + 8) / 2; w > max {
-			max = w
-		}
-	}
-	return max
-}
-
-// bslNetOfPins 找同时含 target 引脚与 role 任一脚的那条网的名字(用第一个 PORT:
-// 名,没有就用目标引脚名当代理)—— 只为算 marker 标签宽度,不参与电气。
-func bslNetOfPins(nets [][]string, target, role string) string {
-	tgt := strings.TrimSuffix(target, "*")
-	for _, net := range nets {
-		hasT, hasR := false, false
-		portName := ""
-		for _, m := range net {
-			if strings.HasPrefix(m, "PORT:") {
-				if portName == "" {
-					portName = strings.TrimPrefix(m, "PORT:")
-				}
-				continue
-			}
-			if strings.TrimSuffix(m, "*") == tgt {
-				hasT = true
-			}
-			if r, _, ok := splitBlockPinRef(m); ok && r == role {
-				hasR = true
-			}
-		}
-		if hasT && hasR {
-			if portName != "" {
-				return portName
-			}
-			return tgt
-		}
-	}
-	return tgt
 }
 
 // bslGroupNets 收集并列组成员沾到的所有网名(算 pitch 时取最长标签)。

@@ -30,12 +30,18 @@ import (
 // conducts on EVERY layer); W/H are the real copper extent when the connector
 // could derive it from the pad shape (0 = unknown, e.g. a polygon pad).
 type pcbLPad struct {
-	Designator string
-	Number     string
-	Net        string
-	Layer      int
-	X, Y       float64
-	W, H       float64
+	ID                             string
+	Designator                     string
+	Number                         string
+	Net                            string
+	Layer                          int
+	X, Y                           float64
+	W, H                           float64
+	Rotation                       float64
+	Shape, SpecialPad              any
+	Availability                   map[string]string
+	CaptureErrors                  map[string]any
+	GeometryStatus, GeometryReason string
 }
 
 // pcbLComp is a placed footprint's identity + rendered extent. Layer is the
@@ -43,9 +49,13 @@ type pcbLPad struct {
 // axis overlap is judged along, because a top part and a bottom part sharing an
 // XY is a legal top/bottom pass-through, not a collision.
 type pcbLComp struct {
-	Designator string
-	Layer      int
-	BBox       *layoutBBox
+	ID            string
+	Designator    string
+	Layer         int
+	BBox          *layoutBBox
+	Availability  map[string]string
+	CaptureErrors map[string]any
+	PadFailures   []map[string]any
 }
 
 // sameAssemblySide reports whether two footprints sit on the same physical side
@@ -122,14 +132,16 @@ type pcbLAccessFinding struct {
 
 // pcbLayoutReport is the full normalized result.
 type pcbLayoutReport struct {
-	OK             bool          `json:"ok"`
-	Score          int           `json:"score"`   // 0-100 routability
-	Verdict        string        `json:"verdict"` // easy | moderate | hard | very-hard | overlap | short
-	ComponentCount int           `json:"componentCount"`
-	MinGapMil      float64       `json:"minGapMil"`
-	Overlaps       []pcbLFinding `json:"overlaps"`
-	OutsideOutline []pcbLFinding `json:"outsideOutline"`
-	TightPairs     []pcbLFinding `json:"tightSpacing"`
+	OK             bool                `json:"ok"`
+	Incomplete     bool                `json:"incomplete"`
+	Coverage       pcbGeometryCoverage `json:"coverage"`
+	Score          int                 `json:"score"`   // 0-100 routability
+	Verdict        string              `json:"verdict"` // easy | moderate | hard | very-hard | overlap | short
+	ComponentCount int                 `json:"componentCount"`
+	MinGapMil      float64             `json:"minGapMil"`
+	Overlaps       []pcbLFinding       `json:"overlaps"`
+	OutsideOutline []pcbLFinding       `json:"outsideOutline"`
+	TightPairs     []pcbLFinding       `json:"tightSpacing"`
 	// AltFitStacks 是同网集堆叠对：两件焊盘数相同、非空网名多重集完全一致且
 	// 本体相交/贴住 —— 官方板的装配选项惯例（同位放两个 fit 选项只焊一个）或
 	// 刻意并联。同网集意味着**不可能**造成跨网短路，装配上也是有意为之，所以
@@ -143,6 +155,9 @@ type pcbLayoutReport struct {
 	// 专业惯例(五板校准实锤:K230 的 CARD1↔R57/L6、实战派S3 的 C13↔J1)。
 	// 单列 INFO(需人工核对壳下净高),不算 blocking。焊盘真接触仍是 overlap。
 	UnderShellPairs []pcbLFinding `json:"underShellPairs,omitempty"`
+	// A possible shell overlap with unknown pad geometry remains an explicit
+	// unresolved diagnostic. It is never certified as safe under-shell placement.
+	UnverifiedOverlaps []pcbLFinding `json:"unverifiedOverlaps,omitempty"`
 	// Shorts is cross-net copper contact (pad↔pad), a strictly worse finding
 	// than a geometric overlap: the board is electrically wrong, not just tight.
 	Shorts []pcbLShort `json:"shorts,omitempty"`
@@ -232,14 +247,61 @@ func analyzeSolderAccess(comps []pcbLComp, accessMil float64) []pcbLAccessFindin
 	return out
 }
 
-// padCopperRect is a pad's axis-aligned copper extent. Reported false when the
-// connector could not derive width/height from the pad shape (polygon pads) —
-// a sizeless pad is skipped rather than guessed at, so the short check never
-// invents contact it cannot measure.
-// circleLikePad 判定一个焊盘按圆处理：w≈h（1mil 容差）。dump 数据没有形状字段，
-// 圆盘与方盘同形 —— 按圆判偏容忍（见 padShorts 的圆盘感知注释）。
-func circleLikePad(p pcbLPad) bool {
-	return math.Abs(p.W-p.H) < 1
+func (p pcbLPad) boardPad() boardPad {
+	return boardPad{ID: p.ID, Number: p.Number, Net: p.Net, Layer: p.Layer, X: p.X, Y: p.Y, W: p.W, H: p.H,
+		Rotation: p.Rotation, Shape: p.Shape, SpecialPad: p.SpecialPad,
+		Availability: p.Availability, CaptureErrors: p.CaptureErrors,
+		GeometryStatus: p.GeometryStatus, GeometryReason: p.GeometryReason}
+}
+
+func (p pcbLPad) positionKnown() bool {
+	return allFinite(p.X, p.Y, p.Rotation) && !(p.GeometryStatus == "unknown" && p.GeometryReason == "pad pose x/y/rotation is missing or malformed")
+}
+
+// Contact requires native source geometry supported by the common exact kernel.
+// A legacy W/H envelope can describe placement, but cannot prove copper contact.
+func pcbLayoutPadGeometry(p boardPad, ref string) (pcbPadP, string, string) {
+	native, status, reason := pcbMeasuredPad(p, ref)
+	if status == "available" {
+		center := [2]float64{native.X, native.Y}
+		if _, err := pcbExactPadSegmentGap(native, center, center); err != nil {
+			return native, "unsupported", err.Error()
+		}
+	}
+	return native, status, reason
+}
+
+func layoutPadsMeasured(ps []pcbLPad) bool {
+	if len(ps) == 0 {
+		return false
+	}
+	for _, p := range ps {
+		if _, status, _ := pcbLayoutPadGeometry(p.boardPad(), p.Designator); status != "available" {
+			return false
+		}
+	}
+	return true
+}
+
+func pcbLayoutCoverage(comps []pcbLComp, pads []pcbLPad) pcbGeometryCoverage {
+	s := &boardSnapshot{}
+	if comps != nil {
+		s.Components = make([]boardComp, 0, len(comps))
+	}
+	for _, c := range comps {
+		component := boardComp{ID: c.ID, Designator: c.Designator, BBox: c.BBox,
+			Availability: c.Availability, CaptureErrors: c.CaptureErrors, PadFailures: c.PadFailures}
+		if c.Availability["pads"] == "available" {
+			component.Pads = []boardPad{}
+		}
+		for _, p := range pads {
+			if p.Designator == c.Designator {
+				component.Pads = append(component.Pads, p.boardPad())
+			}
+		}
+		s.Components = append(s.Components, component)
+	}
+	return s.geometryCoverage(true)
 }
 
 // connectorishDes 判定位号是不是连接器/卡座类 —— UnderShellPairs 的"壳"方判据。
@@ -251,27 +313,17 @@ func connectorishDes(des string) bool {
 }
 
 // anyPadPairTouch 判两件是否存在任意一对焊盘铜相交（不看网名——这里判的是
-// 物理接触，不是短路）。圆形焊盘走真实圆几何,与 padShorts 同口径(矩形模型的
-// "角铜"假接触会把安装孔环旁的件误判成 overlap)。
+// 物理接触，不是短路）。与 padShorts 同用原生形状与精确几何内核；未知几何
+// 不产生接触结论，调用方必须另查 layoutPadsMeasured，不能以 false 证明无铜。
 func anyPadPairTouch(as, bs []pcbLPad) bool {
 	for _, pa := range as {
-		ra, ok := padCopperRect(pa)
-		if !ok {
-			continue
-		}
 		for _, pb := range bs {
-			rb, ok := padCopperRect(pb)
-			if !ok {
+			if !padsShareCopperLayer(pa, pb) {
 				continue
 			}
-			_, _, ov := overlapExtent(ra, rb)
-			if !ov {
-				continue
+			if _, _, contact := pcbLayoutPadContact(pa, pb); contact {
+				return true
 			}
-			if (circleLikePad(pa) || circleLikePad(pb)) && !padsTouchCircleAware(pa, pb, ra, rb) {
-				continue
-			}
-			return true
 		}
 	}
 	return false
@@ -307,31 +359,54 @@ func sameNetSetStack(as, bs []pcbLPad) bool {
 	return true
 }
 
-// padsTouchCircleAware 在至少一方是圆形焊盘时做真实几何接触判定：
-// 双圆 = 圆心距 < 半径和；圆-矩 = 矩形上离圆心最近的点落进圆内。
-// 只在矩形模型已判相交后调用（这里只负责把「假角铜」的误报滤掉）。
-func padsTouchCircleAware(pa, pb pcbLPad, ra, rb layoutBBox) bool {
-	ca, cb := circleLikePad(pa), circleLikePad(pb)
-	if ca && cb {
-		return math.Hypot(pb.X-pa.X, pb.Y-pa.Y) < (pa.W+pb.W)/2
-	}
-	circle, rect := pa, rb
-	if cb {
-		circle, rect = pb, ra
-	}
-	nx := math.Max(rect.MinX, math.Min(circle.X, rect.MaxX))
-	ny := math.Max(rect.MinY, math.Min(circle.Y, rect.MaxY))
-	return math.Hypot(circle.X-nx, circle.Y-ny) < circle.W/2
-}
-
 func padCopperRect(p pcbLPad) (layoutBBox, bool) {
-	if p.W <= 0 || p.H <= 0 {
+	if !p.positionKnown() {
+		return layoutBBox{}, false
+	}
+	w, h := p.W, p.H
+	if native, status, _ := pcbLayoutPadGeometry(p.boardPad(), p.Designator); status == "available" {
+		// Compute the shape's enclosing box for the broad phase. Contact below
+		// still uses the common exact kernel rather than this envelope.
+		angle := native.Rotation * math.Pi / 180
+		c, s := math.Abs(math.Cos(angle)), math.Abs(math.Sin(angle))
+		switch native.Shape {
+		case "RECT":
+			r := native.ShapeRound
+			w, h = (native.ShapeW-2*r)*c+(native.ShapeH-2*r)*s+2*r, (native.ShapeW-2*r)*s+(native.ShapeH-2*r)*c+2*r
+		case "OVAL":
+			r := math.Min(native.ShapeW, native.ShapeH) / 2
+			w, h = (native.ShapeW-2*r)*c+(native.ShapeH-2*r)*s+2*r, (native.ShapeW-2*r)*s+(native.ShapeH-2*r)*c+2*r
+		case "ELLIPSE":
+			w, h = native.ShapeW, native.ShapeH // only circles are supported here
+		}
+	}
+	if !allFinite(p.X, p.Y, w, h) || w <= 0 || h <= 0 {
 		return layoutBBox{}, false
 	}
 	return layoutBBox{
-		MinX: p.X - p.W/2, MaxX: p.X + p.W/2,
-		MinY: p.Y - p.H/2, MaxY: p.Y + p.H/2,
+		MinX: p.X - w/2, MaxX: p.X + w/2,
+		MinY: p.Y - h/2, MaxY: p.Y + h/2,
 	}, true
+}
+
+func pcbLayoutPadContact(a, b pcbLPad) (float64, float64, bool) {
+	pa, sa, _ := pcbLayoutPadGeometry(a.boardPad(), a.Designator)
+	pb, sb, _ := pcbLayoutPadGeometry(b.boardPad(), b.Designator)
+	if sa != "available" || sb != "available" {
+		return 0, 0, false
+	}
+	ra, oka := padCopperRect(a)
+	rb, okb := padCopperRect(b)
+	if !oka || !okb {
+		return 0, 0, false
+	}
+	ox := math.Min(ra.MaxX, rb.MaxX) - math.Max(ra.MinX, rb.MinX)
+	oy := math.Min(ra.MaxY, rb.MaxY) - math.Max(ra.MinY, rb.MinY)
+	if ox < -netPathGeomEps || oy < -netPathGeomEps {
+		return 0, 0, false
+	}
+	gap, err := pcbReflowPadGap(pa, pb)
+	return math.Max(0, ox), math.Max(0, oy), err == nil && gap <= netPathGeomEps
 }
 
 // padsShareCopperLayer reports whether two pads have copper on a common layer.
@@ -364,28 +439,18 @@ func padShortLayer(a, b pcbLPad) string {
 func padShorts(as, bs []pcbLPad) []pcbLShort {
 	var out []pcbLShort
 	for _, pa := range as {
-		ra, ok := padCopperRect(pa)
-		if !ok || pa.Net == "" {
+		if pa.Net == "" {
+			continue
+		}
+		if _, status, _ := pcbLayoutPadGeometry(pa.boardPad(), pa.Designator); status != "available" {
 			continue
 		}
 		for _, pb := range bs {
 			if pb.Net == "" || pb.Net == pa.Net || !padsShareCopperLayer(pa, pb) {
 				continue
 			}
-			rb, ok := padCopperRect(pb)
-			if !ok {
-				continue
-			}
-			ox, oy, ov := overlapExtent(ra, rb)
-			if !ov {
-				continue
-			}
-			// 圆盘感知：w≈h 的焊盘（圆盘/方盘同形，dump 只有 w/h）按圆判接触 ——
-			// 圆-圆看圆心距，圆-矩看矩形最近点到圆心。矩形模型把圆盘的四个角
-			// 也当铜 —— 挨着安装孔环的 LED 矩形盘被判成跨网短路（庐山派K230
-			// 校准实锤两条假短路，D4.1↔hole4.1 角碰环）。真方盘的纯角接触极
-			// 罕见且有活体 DRC 兜底，这里宁可错放不错杀。
-			if (circleLikePad(pa) || circleLikePad(pb)) && !padsTouchCircleAware(pa, pb, ra, rb) {
+			ox, oy, contact := pcbLayoutPadContact(pa, pb)
+			if !contact {
 				continue
 			}
 			out = append(out, pcbLShort{
@@ -412,6 +477,8 @@ func padLabel(p pcbLPad) string {
 // be nil) drives the outside-outline check.
 func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, minGapMil float64) pcbLayoutReport {
 	rep := pcbLayoutReport{MinGapMil: minGapMil, ComponentCount: len(comps)}
+	rep.Coverage = pcbLayoutCoverage(comps, pads)
+	rep.Incomplete = !rep.Coverage.Complete
 
 	withBBox := make([]pcbLComp, 0, len(comps))
 	for _, c := range comps {
@@ -427,6 +494,20 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 	padsByRef := map[string][]pcbLPad{}
 	for _, p := range pads {
 		padsByRef[p.Designator] = append(padsByRef[p.Designator], p)
+	}
+	// Copper contact is independent of rendered bbox availability and assembly
+	// face. A missing bbox must not suppress a known pad short.
+	refs := make([]string, 0, len(padsByRef))
+	for ref := range padsByRef {
+		if ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs)
+	for i, a := range refs {
+		for _, b := range refs[i+1:] {
+			rep.Shorts = append(rep.Shorts, padShorts(padsByRef[a], padsByRef[b])...)
+		}
 	}
 
 	// 本体代理（courtyard proxy）：重叠/间距判定用**焊盘并集**，退化才用渲染 bbox。
@@ -491,13 +572,6 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 				side = b.Layer
 			}
 			ox, oy, ov := overlapExtent(bodyByRef[a.Designator], bodyByRef[b.Designator])
-			// Copper contact is the electrical truth and outranks the geometric
-			// one — check it regardless of assembly side. Pads are looked up by
-			// designator, so two parts sharing one (or both unnamed) are skipped
-			// rather than compared against their own pads.
-			if ov && la != lb && la != "" && lb != "" {
-				rep.Shorts = append(rep.Shorts, padShorts(padsByRef[la], padsByRef[lb])...)
-			}
 			if !sameAssemblySide(a.Layer, b.Layer) {
 				continue // opposite sides: bodies pass through each other legally
 			}
@@ -509,11 +583,19 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 				continue
 			}
 			if ov {
-				if (connectorishDes(la) || connectorishDes(lb)) &&
-					!anyPadPairTouch(padsByRef[la], padsByRef[lb]) {
-					rep.UnderShellPairs = append(rep.UnderShellPairs, pcbLFinding{
-						Type: "under-shell", A: la, B: lb, Side: sideName(side),
-						OvX: round2(ox), OvY: round2(oy)})
+				if (connectorishDes(la) || connectorishDes(lb)) && !anyPadPairTouch(padsByRef[la], padsByRef[lb]) {
+					measured := layoutPadsMeasured(padsByRef[la]) && layoutPadsMeasured(padsByRef[lb]) &&
+						len(a.PadFailures) == 0 && len(b.PadFailures) == 0 &&
+						a.CaptureErrors["pads"] == nil && b.CaptureErrors["pads"] == nil &&
+						(a.Availability["pads"] == "" || a.Availability["pads"] == "available") &&
+						(b.Availability["pads"] == "" || b.Availability["pads"] == "available")
+					finding := pcbLFinding{Type: "under-shell", A: la, B: lb, Side: sideName(side), OvX: round2(ox), OvY: round2(oy)}
+					if measured {
+						rep.UnderShellPairs = append(rep.UnderShellPairs, finding)
+					} else {
+						finding.Type = "unverified-overlap"
+						rep.UnverifiedOverlaps = append(rep.UnverifiedOverlaps, finding)
+					}
 					continue
 				}
 				rep.Overlaps = append(rep.Overlaps, pcbLFinding{
@@ -546,15 +628,21 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 	if outline != nil {
 		for _, c := range withBBox {
 			var outside bool
+			knownPositions := 0
 			if cps := padsByRef[c.Designator]; len(cps) > 0 {
 				for _, p := range cps {
+					if !p.positionKnown() {
+						continue
+					}
+					knownPositions++
 					if p.X < outline.MinX || p.X > outline.MaxX ||
 						p.Y < outline.MinY || p.Y > outline.MaxY {
 						outside = true
 						break
 					}
 				}
-			} else {
+			}
+			if knownPositions == 0 {
 				outside = c.BBox.MinX < outline.MinX || c.BBox.MinY < outline.MinY ||
 					c.BBox.MaxX > outline.MaxX || c.BBox.MaxY > outline.MaxY
 			}
@@ -568,7 +656,7 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 	//    the metric). Per net: MST length; then count cross-net segment crossings.
 	byNet := map[string][]pcbLPad{}
 	for _, p := range pads {
-		if p.Net == "" || isGlobalNet(p.Net) {
+		if !p.positionKnown() || p.Net == "" || isGlobalNet(p.Net) {
 			continue
 		}
 		byNet[p.Net] = append(byNet[p.Net], p)
@@ -616,9 +704,16 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 	})
 	rep.CrossingCount = len(rep.Crossings)
 
+	finalizePcbLayoutReport(&rep)
+	return rep
+}
+
+// One finalizer keeps the pure and live reports consistent after live coverage
+// restores information (such as malformed records) omitted by parsed views.
+func finalizePcbLayoutReport(rep *pcbLayoutReport) {
 	// 4. Score + verdict. Shorts and overlaps are fatal; crossings/outside
 	//    dominate routability.
-	rep.OK = len(rep.Overlaps) == 0 && len(rep.OutsideOutline) == 0 && len(rep.Shorts) == 0
+	rep.OK = !rep.Incomplete && len(rep.Overlaps) == 0 && len(rep.OutsideOutline) == 0 && len(rep.Shorts) == 0
 	score := 100
 	score -= 100 * len(rep.Shorts)        // cross-net copper contact ⇒ 0
 	score -= 100 * len(rep.Overlaps)      // any overlap ⇒ 0
@@ -637,6 +732,8 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 		rep.Verdict = "short"
 	case len(rep.Overlaps) > 0:
 		rep.Verdict = "overlap"
+	case rep.Incomplete:
+		rep.Verdict = "incomplete"
 	case score >= 85:
 		rep.Verdict = "easy"
 	case score >= 60:
@@ -651,7 +748,9 @@ func analyzePcbLayout(comps []pcbLComp, pads []pcbLPad, outline *layoutBBox, min
 		rep.Score, rep.Verdict, rep.ComponentCount, sidesSuffix(rep.Sides), len(rep.Shorts),
 		len(rep.Overlaps), len(rep.OutsideOutline),
 		len(rep.TightPairs), rep.SignalNets, rep.RatsnestLenMil, rep.CrossingCount)
-	return rep
+	if rep.Incomplete {
+		rep.Summary += "; geometry inspection incomplete"
+	}
 }
 
 // sidesSuffix spells out the per-side split on a double-sided board (" [top 90
@@ -784,50 +883,8 @@ func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON b
 	if err != nil {
 		return fmt.Errorf("fetch PCB components: %w", err)
 	}
-	rawComps, _ := mnav(res.Result, "components").([]any)
-
-	var comps []pcbLComp
-	var pads []pcbLPad
-	for _, rc := range rawComps {
-		cm, ok := rc.(map[string]any)
-		if !ok {
-			continue
-		}
-		desig, _ := cm["designator"].(string)
-		lc := pcbLComp{Designator: desig}
-		// Assembly side (1=top, 2=bottom) — overlap is judged per side.
-		if lv, ok := asFloatOK(cm["layer"]); ok {
-			lc.Layer = int(lv)
-		}
-		if bb, ok := cm["bbox"].(map[string]any); ok {
-			minX, _ := asFloatOK(bb["minX"])
-			minY, _ := asFloatOK(bb["minY"])
-			maxX, _ := asFloatOK(bb["maxX"])
-			maxY, _ := asFloatOK(bb["maxY"])
-			lc.BBox = &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
-		}
-		comps = append(comps, lc)
-		if rawPads, ok := cm["pads"].([]any); ok {
-			for _, rp := range rawPads {
-				pm, ok := rp.(map[string]any)
-				if !ok {
-					continue
-				}
-				net, _ := pm["net"].(string)
-				x, _ := asFloatOK(pm["x"])
-				y, _ := asFloatOK(pm["y"])
-				p := pcbLPad{Designator: desig, Number: asString(pm["padNumber"]), Net: net, X: x, Y: y}
-				// Layer + real copper extent feed the cross-net short check;
-				// both are best-effort (0 ⇒ unknown, handled downstream).
-				if lv, ok := asFloatOK(pm["layer"]); ok {
-					p.Layer = int(lv)
-				}
-				p.W, _ = asFloatOK(pm["width"])
-				p.H, _ = asFloatOK(pm["height"])
-				pads = append(pads, p)
-			}
-		}
-	}
+	snapshot := &boardSnapshot{Components: parseBoardComponents(res.Result)}
+	comps, pads := snapshot.toLayoutComps()
 
 	// Board outline bbox (best-effort; nil → skip the off-board check).
 	var outline *layoutBBox
@@ -849,6 +906,9 @@ func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON b
 	}
 
 	rep := analyzePcbLayout(comps, pads, outline, minGapMil)
+	rep.Coverage = pcbReadbackCoverage(res.Result, true)
+	rep.Incomplete = !rep.Coverage.Complete
+	finalizePcbLayoutReport(&rep)
 
 	// Hand-solder iron-access check (issue #99): with a hand-solder profile the
 	// gate also requires every component to keep at least one clear entry side.
@@ -881,7 +941,9 @@ func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON b
 			renderLayoutGate(*gateVerdict, stdout)
 		}
 	}
-	if !rep.OK {
+	// Incomplete evidence is reported as not OK, while ordinary diagnostics
+	// remain available. Only observed geometric errors affect this exit code.
+	if len(rep.Shorts) > 0 || len(rep.Overlaps) > 0 || len(rep.OutsideOutline) > 0 {
 		return fmt.Errorf("layout not routable-ready: %d cross-net short, %d overlap, %d off-board",
 			len(rep.Shorts), len(rep.Overlaps), len(rep.OutsideOutline))
 	}
@@ -904,6 +966,9 @@ func evalLayoutGate(rep pcbLayoutReport, opt pcbLayoutGateOpts) routeGateVerdict
 	v := routeGateVerdict{
 		Score: rep.Score, MinScore: opt.minScore,
 		CrossingCount: rep.CrossingCount, MaxCrossings: opt.maxCrossings,
+	}
+	if rep.Incomplete {
+		v.Reasons = append(v.Reasons, "geometry inspection is incomplete")
 	}
 	if len(rep.Shorts) > 0 {
 		v.Reasons = append(v.Reasons, fmt.Sprintf("%d cross-net pad short", len(rep.Shorts)))
@@ -942,6 +1007,12 @@ func renderLayoutGate(v routeGateVerdict, w io.Writer) {
 
 func renderPcbLayoutReport(rep pcbLayoutReport, w io.Writer) {
 	fmt.Fprintf(w, "PCB layout-lint: %s\n", rep.Summary)
+	if rep.Incomplete {
+		fmt.Fprintf(w, "  INCOMPLETE geometry: %s\n", strings.Join(rep.Coverage.Limitations, "; "))
+	}
+	for _, pair := range rep.UnverifiedOverlaps {
+		fmt.Fprintf(w, "  UNKNOWN overlap    %s ↔ %s (shell clearance cannot be verified from captured pads)\n", pair.A, pair.B)
+	}
 	for _, s := range rep.Shorts {
 		fmt.Fprintf(w, "  ERROR short      %s[%s] ↔ %s[%s] on %s  (copper overlap %.1f×%.1f mil)\n",
 			s.A, s.NetA, s.B, s.NetB, s.Layer, s.OvX, s.OvY)

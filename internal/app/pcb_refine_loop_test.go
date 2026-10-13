@@ -55,6 +55,8 @@ func (c *refineFakeComp) toMap() map[string]any {
 		pads = append(pads, map[string]any{
 			"padNumber": p.number, "net": p.net, "layer": p.layer,
 			"x": c.x + p.dx, "y": c.y + p.dy, "width": p.w, "height": p.h,
+			"rotation": c.rotation, "shape": []any{"RECT", p.w, p.h, 0.0},
+			"availability": map[string]any{"shape": "available", "specialPad": "available"},
 		})
 	}
 	return map[string]any{
@@ -64,7 +66,8 @@ func (c *refineFakeComp) toMap() map[string]any {
 			"minX": c.x + c.bbox[0], "minY": c.y + c.bbox[1],
 			"maxX": c.x + c.bbox[2], "maxY": c.y + c.bbox[3],
 		},
-		"pads": pads,
+		"pads":         pads,
+		"availability": map[string]any{"pads": "available", "bbox": "available"},
 	}
 }
 
@@ -95,6 +98,8 @@ type refineLoopDaemon struct {
 	// countGateableFindings 拿不到 check 报告返回 -1，护栏必须按「无法复核 =
 	// 保守回滚」处理，而不是让 -1 > before 恒假地静默放行。
 	failLineListAfterModify bool
+	// Simulate a legacy extent-only collector for report coverage diagnostics.
+	omitPadShape bool
 }
 
 func newRefineLoopDaemon(t *testing.T, comps []*refineFakeComp) (*appConfig, *refineLoopDaemon, func()) {
@@ -123,7 +128,15 @@ func newRefineLoopDaemon(t *testing.T, comps []*refineFakeComp) (*appConfig, *re
 		case "pcb.components.list":
 			rows := make([]any, 0, len(d.comps))
 			for _, c := range d.comps {
-				rows = append(rows, c.toMap())
+				row := c.toMap()
+				if d.omitPadShape {
+					for _, item := range row["pads"].([]any) {
+						pad := item.(map[string]any)
+						delete(pad, "shape")
+						delete(pad, "availability")
+					}
+				}
+				rows = append(rows, row)
 			}
 			reply(map[string]any{"components": rows})
 		case "pcb.outline.get":
@@ -134,6 +147,8 @@ func newRefineLoopDaemon(t *testing.T, comps []*refineFakeComp) (*appConfig, *re
 			reply(map[string]any{"copperLayerCount": 2, "layers": []any{}})
 		case "pcb.silk.list":
 			reply(map[string]any{"texts": []any{}})
+		case "pcb.via.list":
+			reply(map[string]any{"vias": []any{}})
 		case "pcb.line.list":
 			if d.failLineListAfterModify && d.modified {
 				fmt.Fprint(w, `{"ok":false,"error":{"code":"EDA_CALL_FAILED","message":"check backend gone"}}`)
@@ -308,6 +323,23 @@ func TestRefineLoop_ApplyMovesSnapAndVerify(t *testing.T) {
 	}
 	if rep.ScoreAfter <= rep.ScoreBefore {
 		t.Errorf("score must rise after snapping (tidy 病灶被清): %.1f → %.1f", rep.ScoreBefore, rep.ScoreAfter)
+	}
+}
+
+func TestRefineLoopIncompleteScoreInputIsVisibleWithoutChangingOperationOK(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			cfg, d, done := newRefineLoopDaemon(t, refineLoopBoard())
+			defer done()
+			d.omitPadShape = legacy
+			rep := runRefineForTest(t, cfg, true)
+			if !rep.OK || rep.Incomplete != legacy || rep.Coverage.Complete == legacy || len(d.modifies) != 0 {
+				t.Fatalf("operation/geometry coverage were conflated: %+v", rep)
+			}
+			if legacy && (!strings.Contains(rep.Summary, "geometry inspection incomplete") || !strings.Contains(strings.Join(rep.Warnings, ";"), "does not certify layout quality") || rep.Coverage.LegacyGeometryPads == 0) {
+				t.Fatalf("legacy score input advertised layout completion: %+v", rep)
+			}
+		})
 	}
 }
 

@@ -27,9 +27,6 @@ import (
 // connectorQueueBlockedCode 与 internal/daemon/queueblock.go 的回执码一致。
 const connectorQueueBlockedCode = "CONNECTOR_QUEUE_BLOCKED"
 
-// errQueueBlocked 是 errors.Is 的哨兵(与 errStaleRead 同一套路数)。
-var errQueueBlocked = errors.New("connector action queue blocked")
-
 // isQueueBlocked 报告 err 是不是「队列暂时堵着,动作没发出去」。
 // 判据是 actionError.Code —— 与 isStaleRead 同口径,绝不做文本匹配。
 func isQueueBlocked(err error) bool {

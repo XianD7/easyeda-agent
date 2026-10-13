@@ -31,6 +31,10 @@ func TestReadBudgetOnWire(t *testing.T) {
 		{"schematic.components.list", map[string]any{"includePins": false}, 20 * time.Second, 20000},
 		{"schematic.components.list", nil, 20 * time.Second, 20000},
 		{"document.current", nil, 20 * time.Second, 20000},
+		{"pcb.pour.create", map[string]any{"priority": 0}, 20 * time.Second, 62000},
+		{"pcb.pour.create", map[string]any{"priority": 2}, 90 * time.Second, 90000},
+		{"pcb.pour.create", map[string]any{"priority": 0}, 5 * time.Second, 5000},
+		{"pcb.pour.create", map[string]any{}, 20 * time.Second, 20000},
 	} {
 		t.Run(tc.action+tc.requested.String(), func(t *testing.T) {
 			got := 0

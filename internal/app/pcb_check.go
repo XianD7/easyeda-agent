@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/zhoushoujianwork/easyeda-agent/internal/blocks"
 	"github.com/zhoushoujianwork/easyeda-agent/internal/spec"
 )
 
@@ -259,13 +260,15 @@ type pcbCheckSummary struct {
 }
 
 type pcbCheckReport struct {
-	Passed      bool              `json:"passed"`
-	Summary     pcbCheckSummary   `json:"summary"`
-	TrackCount  int               `json:"trackCount"`
-	ViaCount    int               `json:"viaCount"`
-	PadCount    int               `json:"padCount"`
-	Findings    []pcbCheckFinding `json:"findings"`
-	Limitations []string          `json:"limitations,omitempty"`
+	Passed      bool                `json:"passed"`
+	Summary     pcbCheckSummary     `json:"summary"`
+	TrackCount  int                 `json:"trackCount"`
+	ViaCount    int                 `json:"viaCount"`
+	PadCount    int                 `json:"padCount"`
+	Findings    []pcbCheckFinding   `json:"findings"`
+	Limitations []string            `json:"limitations,omitempty"`
+	Incomplete  bool                `json:"incomplete"`
+	Coverage    pcbGeometryCoverage `json:"coverage"`
 }
 
 // analyzePcbCheck is the copper-only DFM core (no silkscreen). Thin wrapper over
@@ -285,17 +288,19 @@ func analyzePcbCheckFull(pads []pcbPadP, tracks []pcbTrack, vias []pcbViaP, arcs
 		if p.ShapeOK {
 			continue
 		}
-		if p.W > 0 && p.H > 0 {
+		if p.ShapeIssue != "" {
+			rep.Limitations = append(rep.Limitations, fmt.Sprintf("pad %s.%s: %s", p.Designator, p.Number, p.ShapeIssue))
+		} else if p.W > 0 && p.H > 0 {
 			legacyPadGeometry++
 		} else {
 			unknownPadGeometry++
 		}
 	}
 	if legacyPadGeometry > 0 {
-		rep.Limitations = append(rep.Limitations, fmt.Sprintf("%d pad(s) lack source shape; endpoint anchoring uses a conservative legacy ellipse/cardinal or inscribed-circle model from width/height, never the full AABB", legacyPadGeometry))
+		rep.Limitations = append(rep.Limitations, fmt.Sprintf("%d legacy pad(s) have width/height only; endpoint anchoring uses a conservative legacy ellipse/cardinal or inscribed-circle approximation, never the full AABB", legacyPadGeometry))
 	}
 	if unknownPadGeometry > 0 {
-		rep.Limitations = append(rep.Limitations, fmt.Sprintf("%d pad(s) lack both source shape and readable width/height; only center coincidence can anchor them", unknownPadGeometry))
+		rep.Limitations = append(rep.Limitations, fmt.Sprintf("%d pad(s) have no readable geometry; only center coincidence can anchor them", unknownPadGeometry))
 	}
 	if couplingW <= 0 {
 		couplingW = pcbCouplingW
@@ -1580,20 +1585,25 @@ func trackIsStitchStub(t pcbTrack, vias []pcbViaP) bool {
 // A component that carries an RF antenna (an ESP WROOM/WROVER module, or a part
 // named/designated as an antenna) needs a NO-COPPER keep-out under/around its
 // antenna — copper (pour/plane/track) there detunes the antenna. We flag an
-// antenna component whose footprint is NOT overlapped by any no-copper keep-out
-// region (pcb_PrimitiveRegion carrying no-pours/no-fills/no-wires/no-inner-plane).
+// antenna component whose computed radiator rectangle is not fully protected.
+// A bbox intersection, one copper rule or a missing geometry read cannot clear it.
 
 type pcbAntComp struct {
-	Designator string
-	Device     string
-	BBox       *layoutBBox
+	Designator    string
+	Device        string
+	BBox          *layoutBBox
+	RequiredRect  *[4]float64
+	RequiredRules []int
+	Incomplete    string
 }
 
 type pcbKeepRegion struct {
+	PrimitiveID       string
 	BBox              *layoutBBox
-	Layer             int  // the region's copper layer (TOP=1 / BOTTOM=2 / inner id)
-	NoOuterCopper     bool // excludes wires/fills/pours on its own layer (rules 5/6/7)
-	NoInnerElectrical bool // excludes inner planes on ALL inner layers (rule 8)
+	Layer             int // TOP=1 / BOTTOM=2 / MULTI=12 / actual inner id
+	RuleTypes         []int
+	Source            any
+	GeometryAvailable bool
 	Name              string
 }
 
@@ -1613,47 +1623,21 @@ func isAntennaDevice(device, designator string) bool {
 	return strings.HasPrefix(u, "ANT")
 }
 
-// findAntennaKeepout requires a no-copper keep-out over the antenna footprint on
-// EVERY copper layer — not just "a region exists". A top-only keep-out still lets
-// the bottom pour / inner planes fill under the antenna and detune it. copperLayers
-// gates the inner-plane requirement (a 2-layer board has none).
+// findAntennaKeepout uses the same pad-free strip/chip rectangle as creation.
+// Chip antennas keep rules 6/7 without rule 5: their RF feed must enter (#129).
 func findAntennaKeepout(ants []pcbAntComp, regions []pcbKeepRegion, copperLayers int) []pcbCheckFinding {
 	var out []pcbCheckFinding
 	for _, a := range ants {
-		if a.BBox == nil {
+		if a.Incomplete != "" || a.RequiredRect == nil || !antennaValidRect(*a.RequiredRect) {
+			reason := a.Incomplete
+			if reason == "" {
+				reason = "antenna rectangle unavailable"
+			}
+			out = append(out, pcbCheckFinding{Type: "antenna-keepout-incomplete", Level: "WARN", Designator: a.Designator,
+				Message: fmt.Sprintf("antenna component %s (%s): incomplete keep-out check (%s)", a.Designator, a.Device, reason)})
 			continue
 		}
-		topOK, botOK, innerOK := false, false, false
-		for _, r := range regions {
-			if r.BBox == nil || !boxesOverlap(*a.BBox, *r.BBox) {
-				continue
-			}
-			// A MULTI-layer (12/多层) no-copper keep-out covers EVERY copper layer at
-			// once — top, bottom, AND inner — the simplest one-region way to protect an
-			// antenna (no need for a per-layer region on each).
-			if r.NoOuterCopper && r.Layer == pcbLayerMulti {
-				topOK, botOK, innerOK = true, true, true
-			}
-			if r.NoOuterCopper && r.Layer == pcbSideTop {
-				topOK = true
-			}
-			if r.NoOuterCopper && r.Layer == pcbSideBottom {
-				botOK = true
-			}
-			if r.NoInnerElectrical {
-				innerOK = true
-			}
-		}
-		var missing []string
-		if !topOK {
-			missing = append(missing, "top (L1)")
-		}
-		if !botOK {
-			missing = append(missing, "bottom (L2)")
-		}
-		if copperLayers > 2 && !innerOK {
-			missing = append(missing, "inner plane")
-		}
+		missing := antennaCoverageMissing(*a.RequiredRect, a.RequiredRules, regions, copperLayers)
 		if len(missing) > 0 {
 			dev := a.Device
 			if dev == "" {
@@ -1661,7 +1645,7 @@ func findAntennaKeepout(ants []pcbAntComp, regions []pcbKeepRegion, copperLayers
 			}
 			out = append(out, pcbCheckFinding{
 				Type: "antenna-keepout", Level: "WARN", Designator: a.Designator,
-				Message: fmt.Sprintf("antenna component %s (%s) lacks a no-copper keep-out on: %s — copper there detunes the antenna (每层都要禁铺铜)",
+				Message: fmt.Sprintf("antenna component %s (%s) lacks complete polygon/rule coverage on: %s — copper there detunes the antenna (每层都要禁铺铜)",
 					a.Designator, dev, strings.Join(missing, ", ")) + docRule("5.3", "天线下禁止铺铜"),
 			})
 		}
@@ -1804,8 +1788,17 @@ func runPcbCheck(cfg *appConfig, window string, couplingW float64, checkSpec *sp
 		renderPcbCheckReport(*rep, stdout)
 	}
 
-	if strict && rep.Summary.Warnings > 0 {
-		return fmt.Errorf("pcb check: %d issue(s) (--strict)", rep.Summary.Warnings)
+	// Warnings historically includes ERROR findings. Check Errors as well so a
+	// live-only rule cannot accidentally bypass strict mode via counter drift.
+	blocking := rep.Summary.Warnings
+	if rep.Summary.Errors > blocking {
+		blocking = rep.Summary.Errors
+	}
+	if strict && blocking > 0 {
+		return fmt.Errorf("pcb check: %d issue(s) (--strict)", blocking)
+	}
+	if strict && rep.Incomplete {
+		return fmt.Errorf("pcb check incomplete: required pad inventory/geometry was not verified (--strict)")
 	}
 	return nil
 }
@@ -1815,7 +1808,7 @@ func runPcbCheck(cfg *appConfig, window string, couplingW float64, checkSpec *sp
 // post_route_checked gate (布完必查), while `pcb check` keeps owning rendering
 // and --strict semantics.
 func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, checkSpec *spec.Spec, stderr io.Writer) (*pcbCheckReport, error) {
-	pads, err := fetchPcbPads(cfg, window)
+	pads, coverage, err := fetchPcbPadsWithCoverage(cfg, window)
 	if err != nil {
 		return nil, fmt.Errorf("fetch PCB pads: %w", err)
 	}
@@ -1852,6 +1845,13 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 	}
 
 	rep := analyzePcbCheckFull(pads, tracks, vias, arcs, silk, couplingW, diffPairs)
+	rep.Coverage = coverage
+	rep.Incomplete = !coverage.Complete
+	rep.Limitations = append(rep.Limitations, coverage.Limitations...)
+	if aerr != nil {
+		rep.Incomplete = true
+		rep.Limitations = append(rep.Limitations, "copper arc inventory unavailable: "+aerr.Error())
+	}
 
 	// Clearance is a LIVE rule — it needs the board's live spacing value. Flags
 	// copper running under the spacing rule against another net's pad/via/track
@@ -1872,6 +1872,7 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 		rep.Findings = append(rep.Findings, f)
 		rep.Summary.Clearance++
 		rep.Summary.Errors++
+		rep.Summary.Warnings++
 		rep.Summary.Total++
 	}
 	// R15 (#118): netless embedded vias re-materialize on every reload, so this
@@ -1968,12 +1969,17 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 		rep.Passed = rep.Summary.Total == 0
 	}
 
-	// Antenna keep-out is a LIVE-only rule (needs component bboxes + regions, which
-	// the pure core doesn't take). Degrade gracefully if either fetch fails.
+	// Missing antenna geometry/layers is an incomplete check, not an empty pass.
 	if ants, regions, copperLayers, aerr := fetchAntennaContext(cfg, window, silk); aerr != nil {
-		fmt.Fprintf(stderr, "warning: antenna keep-out check skipped (%v)\n", aerr)
+		rep.Incomplete = true
+		rep.Limitations = append(rep.Limitations, "antenna keep-out check incomplete: "+aerr.Error())
+		fmt.Fprintf(stderr, "warning: antenna keep-out check incomplete (%v)\n", aerr)
 	} else {
 		for _, f := range findAntennaKeepout(ants, regions, copperLayers) {
+			if f.Type == "antenna-keepout-incomplete" {
+				rep.Incomplete = true
+				rep.Limitations = append(rep.Limitations, f.Message)
+			}
 			rep.Findings = append(rep.Findings, f)
 			rep.Summary.AntennaKeepout++
 			rep.Summary.Warnings++
@@ -2052,46 +2058,37 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 		rep.Passed = rep.Summary.Total == 0
 	}
 
+	rep.Passed = rep.Summary.Total == 0 && !rep.Incomplete
+	rep.Limitations = uniqueStrings(rep.Limitations)
 	return &rep, nil
 }
 
 func fetchPcbPads(cfg *appConfig, window string) ([]pcbPadP, error) {
-	res, err := requestAction(cfg, "pcb.components.list", window, map[string]any{"includePads": true})
+	pads, coverage, err := fetchPcbPadsWithCoverage(cfg, window)
 	if err != nil {
 		return nil, err
 	}
-	rawComps, _ := mnav(res.Result, "components").([]any)
-	var pads []pcbPadP
-	for _, rc := range rawComps {
-		cm, ok := rc.(map[string]any)
-		if !ok {
-			continue
-		}
-		desig, _ := cm["designator"].(string)
-		rawPads, _ := cm["pads"].([]any)
-		for _, rp := range rawPads {
-			pm, ok := rp.(map[string]any)
-			if !ok {
-				continue
-			}
-			net, _ := pm["net"].(string)
-			id, _ := pm["primitiveId"].(string)
-			num, _ := pm["padNumber"].(string)
-			x, _ := asFloatOK(pm["x"])
-			y, _ := asFloatOK(pm["y"])
-			layer, _ := asFloatOK(pm["layer"])
-			rotation, _ := asFloatOK(pm["rotation"])
-			w, _ := asFloatOK(pm["width"]) // rotated bbox envelope, or legacy shape extent
-			h, _ := asFloatOK(pm["height"])
-			p := pcbPadP{ID: id, Designator: desig, Number: num, Net: net, Layer: int(layer), X: x, Y: y, W: w, H: h, Rotation: rotation}
-			if err := parseNetPathPadShape(pm, &p, fmt.Sprintf("%s.%s", desig, num)); err != nil {
-				p.ShapeOK = false
-				p.ShapeIssue = err.Error()
-			}
-			pads = append(pads, p)
+	// Planning consumers must not turn a partial inventory into a complete set
+	// of power nets or obstacles. The read-only check reports missing coverage.
+	if !coverage.ComponentsInventoryKnown || !coverage.PadsInventoryKnown || len(pads) != coverage.TotalPads {
+		return nil, fmt.Errorf("PCB pad inventory/pose incomplete: %s", strings.Join(coverage.Limitations, "; "))
+	}
+	for _, pad := range coverage.UnverifiedPads {
+		if pad.CaptureFailed {
+			return nil, fmt.Errorf("PCB pad %s.%s unavailable: %s", pad.Designator, pad.PadNumber, pad.Reason)
 		}
 	}
 	return pads, nil
+}
+
+func fetchPcbPadsWithCoverage(cfg *appConfig, window string) ([]pcbPadP, pcbGeometryCoverage, error) {
+	res, err := requestAction(cfg, "pcb.components.list", window, map[string]any{"includePads": true})
+	if err != nil {
+		return nil, pcbGeometryCoverage{}, err
+	}
+	coverage := pcbReadbackCoverage(res.Result, false)
+	snapshot := &boardSnapshot{Components: parseBoardComponents(res.Result)}
+	return snapshot.toCheckPads(), coverage, nil
 }
 
 func fetchPcbTracks(cfg *appConfig, window string) ([]pcbTrack, error) {
@@ -2099,12 +2096,15 @@ func fetchPcbTracks(cfg *appConfig, window string) ([]pcbTrack, error) {
 	if err != nil {
 		return nil, err
 	}
-	rawLines, _ := mnav(res.Result, "lines").([]any)
+	rawLines, err := netPathRequiredSlice(res.Result, "lines")
+	if err != nil {
+		return nil, err
+	}
 	var tracks []pcbTrack
 	for _, rl := range rawLines {
 		lm, ok := rl.(map[string]any)
 		if !ok {
-			continue
+			return nil, fmt.Errorf("track inventory contains malformed record")
 		}
 		id, _ := lm["primitiveId"].(string)
 		net, _ := lm["net"].(string)
@@ -2127,12 +2127,18 @@ func fetchPcbArcs(cfg *appConfig, window string) ([]pcbArc, error) {
 	if err != nil {
 		return nil, err
 	}
-	rawArcs, _ := mnav(res.Result, "arcs").([]any)
+	if available, declared := res.Result["arcsAvailable"].(bool); declared && !available {
+		return nil, fmt.Errorf("copper arc inventory capture failed")
+	}
+	rawArcs, err := netPathRequiredSlice(res.Result, "arcs")
+	if err != nil {
+		return nil, err
+	}
 	var arcs []pcbArc
 	for _, ra := range rawArcs {
 		am, ok := ra.(map[string]any)
 		if !ok {
-			continue
+			return nil, fmt.Errorf("arc inventory contains malformed record")
 		}
 		id, _ := am["primitiveId"].(string)
 		net, _ := am["net"].(string)
@@ -2153,12 +2159,15 @@ func fetchPcbVias(cfg *appConfig, window string) ([]pcbViaP, error) {
 	if err != nil {
 		return nil, err
 	}
-	rawVias, _ := mnav(res.Result, "vias").([]any)
+	rawVias, err := netPathRequiredSlice(res.Result, "vias")
+	if err != nil {
+		return nil, err
+	}
 	var vias []pcbViaP
 	for _, rv := range rawVias {
 		vm, ok := rv.(map[string]any)
 		if !ok {
-			continue
+			return nil, fmt.Errorf("via inventory contains malformed record")
 		}
 		id, _ := vm["primitiveId"].(string)
 		net, _ := vm["net"].(string)
@@ -2279,90 +2288,119 @@ func parsePcbSilkVisibility(raw map[string]any, field, availabilityField string)
 	return nil, "unknown"
 }
 
-// fetchAntennaContext resolves antenna-bearing components (by device name from the
-// silk Device attribute, or an ANT* designator) with their bboxes, plus every
-// keep-out region with its bbox + whether it excludes copper.
+// fetchAntennaContext derives the same parameterized radiator rectangle as the
+// generator. Missing bboxes/pads/source/layers remain explicit incomplete data.
 func fetchAntennaContext(cfg *appConfig, window string, silk []pcbSilkText) ([]pcbAntComp, []pcbKeepRegion, int, error) {
-	// copper layer count (gates the inner-plane keep-out requirement).
-	copperLayers := 2
-	if lres, err := requestAction(cfg, "pcb.layers.list", window, nil); err == nil {
-		if n, ok := asFloatOK(mnav(lres.Result, "copperLayerCount")); ok && n > 0 {
-			copperLayers = int(n)
-		}
-	}
-	// device name per component id, from the silk Device attribute.
 	devByComp := map[string]string{}
 	for _, s := range silk {
 		if s.Kind == "attribute" && s.Key == "Device" && s.CompID != "" {
 			devByComp[s.CompID] = s.Text
 		}
 	}
-
-	cres, err := requestAction(cfg, "pcb.components.list", window, map[string]any{"includeBBox": true})
+	cres, err := requestAction(cfg, "pcb.components.list", window, map[string]any{"includeBBox": true, "includePads": true})
 	if err != nil {
-		return nil, nil, copperLayers, err
+		return nil, nil, 0, fmt.Errorf("antenna component inventory unavailable: %w", err)
+	}
+	components, err := netPathRequiredSlice(cres.Result, "components")
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	keepouts, err := blocks.LoadAntennaKeepouts()
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("antenna depth declarations unavailable: %w", err)
 	}
 	var ants []pcbAntComp
-	for _, rc := range mnavSlice(cres.Result, "components") {
-		cm, ok := rc.(map[string]any)
+	for _, raw := range components {
+		cm, ok := raw.(map[string]any)
 		if !ok {
-			continue
+			return nil, nil, 0, fmt.Errorf("antenna component inventory contains an unreadable record")
 		}
-		id, _ := cm["primitiveId"].(string)
-		desig, _ := cm["designator"].(string)
-		// Silk Device attr → else cpDeviceName (manufacturerId / non-template name).
-		// The SAME resolver `pcb antenna-keepout` uses, so both detect the same RF
-		// parts (the placed `name` is often the "={Manufacturer Part}" template).
+		id, desig := asString(cm["primitiveId"]), asString(cm["designator"])
 		device := resolveAntennaDevice(devByComp[id], cm)
 		if !isAntennaDevice(device, desig) {
 			continue
 		}
-		ac := pcbAntComp{Designator: desig, Device: device}
-		if bb, ok := cm["bbox"].(map[string]any); ok {
-			minX, _ := asFloatOK(bb["minX"])
-			minY, _ := asFloatOK(bb["minY"])
-			maxX, _ := asFloatOK(bb["maxX"])
-			maxY, _ := asFloatOK(bb["maxY"])
-			ac.BBox = &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
+		ac := pcbAntComp{Designator: desig, Device: device, RequiredRules: []int{5, 6, 7}}
+		for _, key := range []string{"bbox", "pads"} {
+			if issue := antennaCommandCaptureIssue(cm, key); issue != "" {
+				ac.Incomplete = issue
+				break
+			}
+		}
+		bb, bboxErr := antennaCommandBBox(cm)
+		if bboxErr != nil && ac.Incomplete == "" {
+			ac.Incomplete = bboxErr.Error()
+		}
+		if bboxErr == nil {
+			ac.BBox = &bb
+		}
+		padRecords, padsOK := cm["pads"].([]any)
+		if (!padsOK || len(padRecords) == 0) && ac.Incomplete == "" {
+			ac.Incomplete = "pad inventory unavailable or empty"
+		}
+		var pads [][2]float64
+		for _, rawPad := range padRecords {
+			pm, ok := rawPad.(map[string]any)
+			if !ok {
+				ac.Incomplete = "unreadable pad record"
+				break
+			}
+			x, xok := asFloatOK(pm["x"])
+			y, yok := asFloatOK(pm["y"])
+			if !xok || !yok || !antennaFinite(x) || !antennaFinite(y) {
+				ac.Incomplete = "pad coordinates unavailable"
+				break
+			}
+			pads = append(pads, [2]float64{x, y})
+		}
+		if ac.Incomplete == "" {
+			var x0, y0, x1, y1 float64
+			var ok bool
+			if isChipAntennaPart(device, bb.MaxX-bb.MinX, bb.MaxY-bb.MinY) {
+				x0, y0, x1, y1, ok = chipAntennaKeepoutRect(bb.MinX, bb.MinY, bb.MaxX, bb.MaxY, 120)
+				// #129: no-wires would prohibit the chip antenna's own RF feed.
+				ac.RequiredRules = []int{6, 7}
+			} else {
+				x0, y0, x1, y1, ok = antennaKeepoutRect(bb.MinX, bb.MinY, bb.MaxX, bb.MaxY, pads,
+					antennaKeepoutFrac(keepouts, device), 20, 40)
+			}
+			if ok {
+				rect := [4]float64{x0, y0, x1, y1}
+				ac.RequiredRect = &rect
+			} else {
+				ac.Incomplete = "cannot derive a pad-free antenna strip"
+			}
 		}
 		ants = append(ants, ac)
 	}
-
+	if len(ants) == 0 {
+		return ants, nil, 0, nil
+	}
+	lres, err := requestAction(cfg, "pcb.layers.list", window, nil)
+	if err != nil {
+		return ants, nil, 0, fmt.Errorf("antenna copper layers unavailable: %w", err)
+	}
+	n, ok := asFloatOK(lres.Result["copperLayerCount"])
+	if !ok || !antennaFinite(n) || n < 2 || n > 32 || n != math.Trunc(n) || int(n)%2 != 0 {
+		return ants, nil, 0, fmt.Errorf("antenna copper layer count unavailable or invalid")
+	}
+	copperLayers := int(n)
 	rres, err := requestAction(cfg, "pcb.region.list", window, nil)
 	if err != nil {
-		return nil, nil, copperLayers, err
+		return ants, nil, copperLayers, fmt.Errorf("antenna region inventory unavailable: %w", err)
 	}
-	var regions []pcbKeepRegion
-	for _, rr := range mnavSlice(rres.Result, "regions") {
-		rm, ok := rr.(map[string]any)
-		if !ok {
-			continue
+	rawRegions, err := netPathRequiredSlice(rres.Result, "regions")
+	if err != nil {
+		return ants, nil, copperLayers, err
+	}
+	regions := parseAntennaKeepRegions(rres.Result)
+	if len(regions) != len(rawRegions) {
+		return ants, regions, copperLayers, fmt.Errorf("antenna region inventory contains unreadable records")
+	}
+	for _, region := range regions {
+		if !region.GeometryAvailable {
+			return ants, regions, copperLayers, fmt.Errorf("antenna region %s geometry unavailable (closed single linear polygon required)", region.PrimitiveID)
 		}
-		kr := pcbKeepRegion{}
-		if name, ok := rm["regionName"].(string); ok {
-			kr.Name = name
-		}
-		if lf, ok := asFloatOK(rm["layer"]); ok {
-			kr.Layer = int(lf)
-		}
-		// no-wires(5)/no-fills(6)/no-pours(7) exclude copper on the region's own layer;
-		// no-inner-electrical(8) excludes copper on ALL inner plane layers.
-		for _, rt := range toFloatSlice(rm["ruleType"]) {
-			switch int(rt) {
-			case 5, 6, 7:
-				kr.NoOuterCopper = true
-			case 8:
-				kr.NoInnerElectrical = true
-			}
-		}
-		if bb, ok := rm["bbox"].(map[string]any); ok {
-			minX, _ := asFloatOK(bb["minX"])
-			minY, _ := asFloatOK(bb["minY"])
-			maxX, _ := asFloatOK(bb["maxX"])
-			maxY, _ := asFloatOK(bb["maxY"])
-			kr.BBox = &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
-		}
-		regions = append(regions, kr)
 	}
 	return ants, regions, copperLayers, nil
 }
@@ -2396,6 +2434,10 @@ func renderPcbCheckReport(rep pcbCheckReport, w io.Writer) {
 		fmt.Fprintf(w, "  LIMIT %s\n", limitation)
 	}
 	if s.Total == 0 {
+		if rep.Incomplete {
+			fmt.Fprintln(w, "  incomplete: no findings in observed data; required inventory/geometry is unverified")
+			return
+		}
 		fmt.Fprintln(w, "  ✓ no DFM issues found")
 		return
 	}

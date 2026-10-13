@@ -77,6 +77,7 @@
 | 模块候选布局 | `pcb layout-plan --from --board --module --candidates --out` | footprint anchor 为写坐标；bbox/pads/板框中心线用于变换、避让与事实测量；报告最小间隙及对应对象对，输出目录整体替换，候选绑定原始输入 SHA256。 |
 | 二层布局/布线协同 | `pcb layout solve/check/render` | 纯离线读取 fresh `pcb dump --include-copper`；完整移动组与内部铜刚体投影，多网共同路径、路由反馈让位、共享状态预算和独立复验；输出基线/失败尝试/最终候选的整板与局部 SVG。四层联合求解 planned。 |
 | 铜完整快照 | `pcb dump --include-copper` | 串行采集 tracks/arcs、vias、pour 边界、实际 poured fills、regions、静态 fills；每类保留 available/unknown，并生成忽略采集时间、项目显示标签和哈希自身的语义 SHA256。 |
+| 边界与铺铜排序 | `pcb pour` / `pcb region` / `pcb fill create` | 本地 dev.5 候选仅接受省略或 0.2mil 边界宽度；显式铺铜 priority 用原生每层插入顺序（0最高、0..count），等待公开 setter 完成并在重建前后核对原生源。填充/区域核对独立请求几何及唯一 fresh ID；不以 SDK order 回显证明排序，也不签材料化铜连通。 |
 | 实际铺铜读取 | `pcb.poured.list` / `pcb poured-list` | 将宿主材料化 fill 的 0.1mil 坐标/线宽归一化为 mil，保留 nested contours 与 degree ARC sweep；`fill:false` 标为带线宽的 thermal-spoke path。只有完整 inventory 的真实 `[]` 是 known-empty，fill/boundary/net/layer/polygon 任一缺测均为 unknown/error。 |
 | 带铜模块验收 | `pcb module-check --candidate --before --after --journal` | 核对 fresh 语义基线、OSC track/arc replacement 精确全集、严格 PID journal、成员与 pad 几何、ordered path、含实际 signal-main stroke 的双层 no-pours、逐段 guard 到 anchor 的列出铜路径、逐个 GND via 的双层实际铜同岛连接及所有非目标差异；`affectedBaselinePours` 只放行影响包络内的声明铺铜重算，缺测返回 incomplete/fail。 |
 
@@ -134,7 +135,6 @@ No one-call PCB autorouter exists on this build (A4 blocked — see survey §6).
 | `schematic.image.list` | Read-only list of every NON-ELECTRICAL reference image (`eda.sch_PrimitiveObject`) on the ACTIVE page — geometry only, never the raw content/binaryData (#272). Pairs with `schematic.image.create`/`modify` below and `schematic.primitives.delete`. Live-verified 2026-09-30 on a real EasyEDA window with PNG/JPEG/SVG through create → list → modify → save → reload → fresh list → prim-delete → `sch export-image` visual check; `sch read` component/net/floating-pin counts confirmed unchanged. CLI `sch image list`. |
 | `pcb.component.attrs_backfill` | Backfill PCB components' EMPTY otherProperty values from their DEVICE-LIBRARY records (resolved per-part by LCSC C-number via `getByLcscIds`). Repairs the platform's sch→PCB import (creates attribute KEYS with empty VALUES — blanking the 器件标准化 panel's PCB columns); the schematic instance is NOT a usable source (its values are empty after save/reload too). Empty-only merge by default (`--overwrite` forces); parts without a C-number skipped + reported. PROJECTED-STATE keys (`Designator`/`Name`/`Manufacturer*`/`Supplier*`/`Add into BOM`/`Unique ID`) are excluded from the merge — the library's own `Designator:"C?"` placeholder used to get merged in and the platform synced it into the primitive designator, wiping 166/166 on a real board (root-caused + fixed 2026-08-09). CLI `pcb sync-attrs`; auto-runs after `pcb import-changes` (`--no-sync-attrs` opts out). Mutates. |
 | `pcb sync-designators` (CLI orchestration; no new action) | Repair placeholder designators (`U?`/`C?`) from the schematic, matched by `uniqueId` (minted by the platform at first sch→PCB import; ONE namespace across both documents — primitiveId is per-document). Placeholder-only (hand-set designators never overwritten); every write read-back-verified; `pcb.save` checkpoint after repair; schematic-side placeholders classified separately ("annotate the schematic first"). `--dry-run`/`--json`, non-zero exit on any failed write. Auto-runs rear-guard after `pcb import-changes` (after attrs, `--no-sync-designators` opts out). Mutates. |
-| `schematic.select` | Select primitives by id, return the active selection. |
 
 **Discover + switch/open loop (CLI, no new actions):** `easyeda doc ls [--project X]`
 aggregates `schematic.pages.list` + `pcb.documents.list` + `document.current`
@@ -157,7 +157,6 @@ canvas, so they apply to whichever document (schematic or PCB) is active. CLI: `
 | Action | What |
 |---|---|
 | `view.fit` | Zoom to fit all primitives — 适应全部, the `K` shortcut (`zoomToAllPrimitives`). |
-| `view.fit_selection` | Zoom to fit the current selection — 适应选中 (`zoomToSelectedPrimitives`). |
 | `view.zoom` | Pan/zoom to a center `x/y` and/or `scale` percent (`zoomTo`); omitted fields keep current. |
 | `view.region` | Zoom to a rectangular region `left/right/top/bottom` (`zoomToRegion`). |
 
@@ -201,7 +200,7 @@ Workspace → Project → **Board** → schematic + PCB. Map to `eda.dmt_Board.*
 | `schematic.component.replace` | Replace a placed component with a **different** device (换型号 — the API equivalent of the 器件标准化 panel's 使用推荐器件, which itself has no extension API). No rebind-device primitive exists, so: capture state + pin table → delete → create the new device at the same pose → restore designator + uniqueId (kept so sch→PCB `import-changes` UPDATEs instead of delete+add). Part-identity fields (name/manufacturer/supplier/LCSC) deliberately follow the NEW device; `--keep-properties` also carries old custom attrs. Target: `--lcsc` (unique) / `--device-uuid`+`--device-lib` / `--query` (unique). Rolls back to the original device (full identity) on failure after delete. Returns a `pinDiff` (removed/added/moved by pinNumber at identical pose) — non-empty ⇒ re-wire, then `sch drc`/`sch check`. Mutates. |
 | `schematic.component.modify` | Patch position, designator, name, BOM flags, or custom properties (components only — not flags). |
 | `schematic.component.delete` | Delete component primitives (confirmation-gated). **Only removes components** — wires/buses/graphics survive; use `schematic.page.clear` for a full page reset. |
-| `schematic.primitives.delete` | Delete primitives of **any** type by id (components, flags, wires, buses, graphics, reference images) — routes each id to its owning class. Omit ids to delete the current selection (select-all → delete). Confirmation-gated, no undo. Fixed 2026-09-30 (#272 follow-on): reference images (`eda.sch_PrimitiveObject`, `schematic.image.*`) were never indexed by this action's by-id lookup — a real `sch prim-delete --ids <imageId>` came back 100% `notFound` on a live EasyEDA window even though `schematic.image.list` could see the image. Now indexed under key `objects`, routed through the same `sch_PrimitiveObject.delete` path `schematic.page.clear`'s preserveParts sweep already used; live-verified against a real window (create → prim-delete → fresh list confirms gone). |
+| `schematic.primitives.delete` | Delete primitives of **any** type by id (components, flags, wires, buses, graphics, reference images) — routes each id to its owning class. Ids are required; the canvas selection is never a delete target. Confirmation-gated, no undo. Fixed 2026-09-30 (#272 follow-on): reference images (`eda.sch_PrimitiveObject`, `schematic.image.*`) were never indexed by this action's by-id lookup — a real `sch prim-delete --ids <imageId>` came back 100% `notFound` on a live EasyEDA window even though `schematic.image.list` could see the image. Now indexed under key `objects`, routed through the same `sch_PrimitiveObject.delete` path `schematic.page.clear`'s preserveParts sweep already used; live-verified against a real window (create → prim-delete → fresh list confirms gone). |
 | `schematic.page.clear` | Clear the **active page**: delete every page-level primitive (components, net flags/ports/labels, wires, buses, graphics), optionally keeping the sheet/title block (`preserveSheet`, default true). `dryRun` reports per-type counts without deleting. Returns `{deleted:{...}, total, deletedIds}`. Confirmation-gated, no undo. |
 | `schematic.wire.create` | Create a wire polyline (optional net/color/width/lineType). |
 | `schematic.netflag.create` | Power / ground / analog-ground / protective-ground / net-port (IN/OUT/BI) / short-circuit flag. |
@@ -380,6 +379,20 @@ not just hand-drawn custom symbols.
 
 These are planned and **not implemented** today.
 
+- **近期工程维护优先级：可靠回读与失败传播。** 先修复保存确认、检查错误退出与
+  PCB 采集完整性：requested pads/bbox 的失败必须保留可机读状态，未知焊盘几何不得
+  在投影时消失或变成“已检查且无问题”。保存相关的后台文档身份与确认仍需定向验证。
+  当前缺陷、已修范围和测试缺口统一见[已知问题](cli-known-bugs.md#工程缺陷分诊)。
+  新源码后端与新的聚合审查命令排在这些可靠性问题之后。
+- **已有工程只读审查与对账（planned）。** 先新增 `pcb.netlist.get` /
+  `pcb netlist`，读取官方 `pcb_Net.getNetlist` 原文并记录实际目标、格式、字节数和 SHA；
+  与现有 `sch netlist` 的原生导出对照。随后提供 `project audit`，用原始 SCH/PCB
+  `uniqueId` 核对器件、位号、pin→pad→net、NC 与机械件例外，并逐项报告
+  pass/fail/unknown、数据来源与覆盖不足，不用总分替代未检查项。同步补齐焊盘形状解析、
+  单位和封装依赖回读，几何未知不得按零尺寸通过。公开 SDK 尚无只读 Import Changes
+  差异列表，PCB 原生网表 getter 也未承诺提供其比较缓存；仍无法解释的官方告警保留
+  `unexplained`。这些接口尚未实现或现场验证，不自动导入、重绑或修复工程。
+
 - **🧩 `easyeda sch block apply` — one-shot circuit-block instantiation (phase-2 write path).**
   The block library's read/browse layer ships today (`references/blocks/*.json` +
   `scripts/blocks.py`); the **write path** — materializing a block into the live
@@ -451,6 +464,9 @@ These are planned and **not implemented** today.
      不被拽走(`a4e9a2d`)。
   4. ✅ **天线 keepout 自动生成** —— 新 `pcb antenna-keepout`(方案 A,块声明 `keepout.end_frac`);
      只盖无焊盘天线端不孤立地脚;MULTI 层全铜层;幂等;`pcb check` 天线检测同步用 manufacturerId。
+     当前幂等与 checker 改为完整规则、层与真实 polygon 包含证明，复合创建去掉非法 name，
+     未验证/partial 返回非零并保留实际 PID。新逻辑的正负回归是离线证据，Web 保存重载仍须另验；
+     [操作与缺测边界](../.agents/skills/easyeda-agent/references/pcb.md#天线禁铜区域)。
      ceshi loop 验证 present→0/deleted→1/regen→0(`ce04deb`)。
 
   仍可从官方插件吸收(未做):**器件布局导出/导入(布局复用)**(块库 PCB 侧对应物)、模块级

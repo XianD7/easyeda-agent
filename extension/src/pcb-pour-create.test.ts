@@ -6,35 +6,35 @@ import { runAction } from './actions';
 const points = [[0, 0], [20, 0], [20, 20], [0, 20]];
 const source = [0, 0, 'L', 20, 0, 20, 20, 0, 20, 0, 0];
 const expected = { PrimitiveId: 'created', Net: 'GND', Layer: 1, PourFillMethod: 'solid',
-	PourName: 'GROUND', PourPriority: 2, LineWidth: 1, PrimitiveLock: false };
+	PourName: 'GROUND', PourPriority: 2, LineWidth: 0.2, PrimitiveLock: false };
 
 function primitive(values: Record<string, unknown>, rebuild?: () => Promise<boolean>) {
 	return new Proxy({}, { get: (_target, key) => key === 'rebuildCopperRegion' ? rebuild
 		: String(key).startsWith('getState_') ? () => values[String(key).slice(9)] : undefined });
 }
 
-for (const field of ['LineWidth', 'Net', 'Layer', 'PourFillMethod', 'PourName', 'PourPriority', 'geometry'] as const) {
+for (const field of ['LineWidth', 'Net', 'Layer', 'PourFillMethod', 'PourName', 'geometry'] as const) {
 	test(`pour create rejects fresh ${field} mismatch despite matching create echo`, async t => {
 		let creates = 0, rebuilds = 0, reads = 0;
 		const values: Record<string, unknown> = { ...expected, ComplexPolygon: { getSource: () => source } };
-		const changes = { LineWidth: 0.2, Net: 'OTHER', Layer: 2, PourFillMethod: '90grid', PourName: null,
+		const changes = { LineWidth: 1, Net: 'OTHER', Layer: 2, PourFillMethod: '90grid', PourName: null,
 			PourPriority: 3, geometry: { getSource: () => [0, 0, 'L', 2, 0, 2, 2, 0, 0] } };
 		values[field === 'geometry' ? 'ComplexPolygon' : field] = changes[field];
 		(globalThis as any).eda = {
 			pcb_MathPolygon: { createPolygon: () => ({ getSource: () => source }) },
 			pcb_PrimitivePour: {
-				create: async (...args: unknown[]) => { creates++; assert.equal(args[7], 1); return primitive(expected); },
+				create: async (...args: unknown[]) => { creates++; assert.equal(args[7], 0.2); return primitive(expected); },
 				getAll: async (net?: string) => { reads++; assert.equal(net, undefined); return [primitive(values, async () => { rebuilds++; return true; })]; },
 			},
 		};
 		t.after(() => { delete (globalThis as any).eda; });
-		const { result }: any = await runAction('pcb.pour.create', { points, net: 'GND', name: 'GROUND', priority: 2, lineWidth: 1 });
+		const { result }: any = await runAction('pcb.pour.create', { points, net: 'GND', name: 'GROUND', lineWidth: 0.2 });
 		assert.equal(creates, 1); assert.equal(reads, 1); assert.equal(rebuilds, 0);
 		assert.equal(result.primitiveId, 'created'); assert.equal(result.verified, false); assert.equal(result.partial, true);
 		assert.equal(result.rebuildAttempted, false); assert.equal(result.poured, false);
 		assert.deepEqual(result.differences, [{ LineWidth: 'lineWidth', Net: 'net', Layer: 'layer', PourFillMethod: 'fill',
 			PourName: 'pourName', PourPriority: 'priority', geometry: 'geometry' }[field]]);
-		if (field === 'LineWidth') assert.equal(result.lineWidth, 0.2, 'report fresh width, not requested width');
+		if (field === 'LineWidth') assert.equal(result.lineWidth, 1, 'report fresh width, not requested width');
 	});
 }
 
@@ -56,7 +56,7 @@ for (const mode of ['missing', 'duplicate', 'unavailable', 'throws', 'after-rebu
 			},
 		};
 		t.after(() => { delete (globalThis as any).eda; });
-		const { result, warnings }: any = await runAction('pcb.pour.create', { points, net: 'GND', lineWidth: 1 });
+		const { result, warnings }: any = await runAction('pcb.pour.create', { points, net: 'GND', lineWidth: 0.2 });
 		assert.equal(creates, 1); assert.equal(result.primitiveId, 'created');
 		assert.equal(result.verified, false); assert.equal(result.partial, true); assert.ok(result.error); assert.ok(warnings.length);
 		assert.equal(rebuilds, mode === 'after-rebuild-unavailable' ? 1 : 0);
@@ -73,7 +73,7 @@ for (const mode of ['filled', 'empty', 'rebuild-throws', 'changed-after-rebuild'
 				create: async () => { creates++; return primitive(expected, async () => { throw new Error('must rebuild fresh object'); }); },
 				getAll: async () => {
 					reads++;
-					return [primitive({ ...expected, LineWidth: mode === 'host-default-width' || (mode === 'changed-after-rebuild' && reads === 2) ? 0.2 : 1,
+					return [primitive({ ...expected, LineWidth: mode === 'host-default-width' || (mode === 'changed-after-rebuild' && reads === 2) ? 1 : 0.2,
 						ComplexPolygon: { getSource: () => actualSource } }, async () => {
 							rebuilds++;
 							if (mode === 'rebuild-throws') throw new Error('no materialization');
@@ -84,7 +84,7 @@ for (const mode of ['filled', 'empty', 'rebuild-throws', 'changed-after-rebuild'
 		};
 		t.after(() => { delete (globalThis as any).eda; });
 		const { result }: any = await runAction('pcb.pour.create', { points, net: 'GND',
-			...(mode === 'host-default-width' ? {} : { lineWidth: 1 }), name: 'GROUND', priority: 2 });
+			...(mode === 'host-default-width' ? {} : { lineWidth: 0.2 }), name: 'GROUND' });
 		assert.equal(creates, 1); assert.equal(reads, 2); assert.equal(rebuilds, 1);
 		assert.equal(result.rebuildAttempted, true); assert.equal(result.verified, mode !== 'changed-after-rebuild');
 		assert.equal(result.poured, !['empty', 'rebuild-throws'].includes(mode));

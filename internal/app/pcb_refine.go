@@ -102,15 +102,19 @@ func defaultRefineOpts() refineOpts {
 
 // refineReport 是整个环的结果。
 type refineReport struct {
-	OK          bool         `json:"ok"`
-	Rounds      int          `json:"rounds"`
-	Steps       []refineStep `json:"steps"`
-	ScoreBefore float64      `json:"scoreBefore"`
-	ScoreAfter  float64      `json:"scoreAfter"`
-	MovedParts  int          `json:"movedParts"`
-	Immovable   int          `json:"immovableParts"`
-	DryRun      bool         `json:"dryRun"`
-	Converged   bool         `json:"converged"`
+	OK bool `json:"ok"`
+	// OK describes step execution/rollback. Coverage describes the score input;
+	// a successful refinement operation does not certify layout geometry.
+	Incomplete  bool                `json:"incomplete"`
+	Coverage    pcbGeometryCoverage `json:"coverage"`
+	Rounds      int                 `json:"rounds"`
+	Steps       []refineStep        `json:"steps"`
+	ScoreBefore float64             `json:"scoreBefore"`
+	ScoreAfter  float64             `json:"scoreAfter"`
+	MovedParts  int                 `json:"movedParts"`
+	Immovable   int                 `json:"immovableParts"`
+	DryRun      bool                `json:"dryRun"`
+	Converged   bool                `json:"converged"`
 	// Blocking = layout-score 的一票否决项(短路/重叠/出板框)在**精修开始时**的数量。
 	// refine 的变换器都修不了它们(它做的是维度微调,不是布局合法化)——非零时报告
 	// 必须显眼地说出来,否则「refine OK」会被误读成「板子没问题」。

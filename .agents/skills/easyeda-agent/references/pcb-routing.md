@@ -293,13 +293,15 @@ and re-pours; passing raw points to the bare `eda.*` create fails ("无法创建
   pour-fit、power-pour、power-planes 失败退出并停止依赖步骤；先按 ID 核对和清理，不重试创建。
   Apply 的 action/run 两入口都保留此失败；通用 verify、显式 retry、continue 或 prompt
   不能将已创建但未验证的边界改判成功或继续写入。先核对现场，再编新的修复计划。
-  已发现 Web 宿主把显式 1 mil 边界线宽读回为 0.2 mil 的情况；不得换成宿主值补签请求，
-  也不从 create 返回对象的参数回显推断已写入。新包只修正检测与传播，不宣称宿主宽度已修复。
-  另一次预声明测试未传线宽，但优先级 2 读回为 1；原因未确定，同样失败退出。
-  这两项只现场验证了错值检测，不能称成功创建路径或高级 CLI 已验收。
+  Web 4.1.60 固定区域/铺铜/填充边界为 0.2mil，其他显式 `--width` 在写前拒绝；
+  不从 create 参数回显推断已写入，也不把历史 1→0.2mil 请求改判成功。
+  优先级的创建参数是同层插入位置，越界会钳制；SDK 还会把原生 order 0 错报为下一顺序。
+  显式 `--priority` 的原生顺序基线、合法范围、等待 `done()` 与写后验证见
+  [PCB 参数契约](pcb.md#pcb-mutation-后的读取与-stalerisk)。历史 2→1 失败仍保留。
+  本地修法与当前宿主现场定向验证分开记录，不宣称高级 CLI 已验收。
   线宽跟踪 [#260](https://github.com/zhoushoujianwork/easyeda-agent/issues/260)，优先级契约跟踪
-  [#261](https://github.com/zhoushoujianwork/easyeda-agent/issues/261)；暂缺经验证的根治方案，
-  不因登记为待修复 bug 而放宽请求/回读比较。验收范围可按用户决定接受已知限制，
+  [#261](https://github.com/zhoushoujianwork/easyeda-agent/issues/261)；
+  不因已定位宿主行为而放宽请求/回读比较。验收范围可按用户决定接受已知限制，
   但不会把具体错值调用改判成功。新的设计若不要求特定边界线宽或相对覆铜排序，
   可以在参数源中明确采用宿主默认值，不传可选 `--width` / `--priority`，再验证实际边界、
   材料化铜及保存重载；不预设边界线宽只有显示影响。这不证明显式字段已修复，
@@ -445,7 +447,11 @@ patch, thermal copper, an odd-shaped plane). Three net-copper primitives, don't 
 - `pcb fill create` (`pcb.fill.create`) — area via `--points` | `--rect x0,y0,x1,y1` |
   `--at x,y --size w,h` | `--ref <designator>` (+ `--margin`), on a `--layer`, bound to
   `--net`. `--fill-mode solid` (default) `| mesh | inner`. `--locked`. Verify with
-  `pcb fill list`. ⚠️ **`--rect` 的四个数是两个对角点 `x0,y0,x1,y1`,不是 `x,y,宽,高`**
+  `pcb fill list`。创建后从完整库存核对唯一 ID、网、层、模式、0.2mil 边界、锁定和原始请求几何；
+  缺测或差异返回 `partial:true/verified:false`，保留 ID，CLI/Apply 停止且不重试。
+  Web 4.1.60 旧 getter 对 mesh/inner 曾读回 solid；新校验会将这种差异判失败，
+  不再将模式当作 fire-and-forget 成功。最终持久化仍须 save → reload → fresh list。
+  ⚠️ **`--rect` 的四个数是两个对角点 `x0,y0,x1,y1`,不是 `x,y,宽,高`**
   (issue #109 实踩:按 x,y,w,h 传参生成盖住 USB-C 区的巨型 fill,原生 DRC 爆 ~50 条)——
   想按「角点 + 宽高」表达就用 **`--at x,y --size w,h`**(与 `--rect` 互斥,`--size` 从
   `--at` 向 +x/+y 延伸)。**防呆护栏**:fill bbox 面积 > 板框 bbox 的 **25%**(板框可读时;

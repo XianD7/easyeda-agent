@@ -11,7 +11,7 @@ import "testing"
 // bb() and layerComp() build the fixtures; bb is shared from cmd_sch_layout_test.go.
 
 func layerComp(d string, layer int, minX, minY, maxX, maxY float64) pcbLComp {
-	return pcbLComp{Designator: d, Layer: layer, BBox: bb(minX, minY, maxX, maxY)}
+	return pcbLComp{Designator: d, Layer: layer, BBox: bb(minX, minY, maxX, maxY), Availability: map[string]string{"pads": "available", "bbox": "available"}}
 }
 
 // The headline fix: identical XY, opposite sides ⇒ 0 overlap; identical XY, same
@@ -122,8 +122,8 @@ func TestAnalyzePcbLayout_CrossNetPadShort(t *testing.T) {
 		layerComp("C2", pcbSideTop, 30, 0, 90, 40),
 	}
 	pads := []pcbLPad{
-		{Designator: "D2", Number: "2", Net: "SW1_NODE", Layer: pcbSideTop, X: 40, Y: 20, W: 20, H: 20},
-		{Designator: "C2", Number: "1", Net: "VBAT_RAW", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20},
+		{Designator: "D2", Number: "2", Net: "SW1_NODE", Layer: pcbSideTop, X: 40, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
+		{Designator: "C2", Number: "1", Net: "VBAT_RAW", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
 	}
 	rep := analyzePcbLayout(comps, pads, nil, 6)
 	if len(rep.Shorts) != 1 {
@@ -146,8 +146,8 @@ func TestAnalyzePcbLayout_CrossNetPadShort(t *testing.T) {
 	// Same geometry, SAME net → touching copper is intentional, no short (the
 	// bodies still overlap, which the overlap finding covers).
 	same := []pcbLPad{
-		{Designator: "D2", Number: "2", Net: "SW1_NODE", Layer: pcbSideTop, X: 40, Y: 20, W: 20, H: 20},
-		{Designator: "C2", Number: "1", Net: "SW1_NODE", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20},
+		{Designator: "D2", Number: "2", Net: "SW1_NODE", Layer: pcbSideTop, X: 40, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
+		{Designator: "C2", Number: "1", Net: "SW1_NODE", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
 	}
 	if rep2 := analyzePcbLayout(comps, same, nil, 6); len(rep2.Shorts) != 0 {
 		t.Errorf("same-net pads touching is not a short: %+v", rep2.Shorts)
@@ -165,16 +165,16 @@ func TestAnalyzePcbLayout_ShortAcrossSides(t *testing.T) {
 		layerComp("J1", pcbSideBottom, 30, 0, 90, 40),
 	}
 	smd := []pcbLPad{
-		{Designator: "U1", Number: "1", Net: "A", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20},
-		{Designator: "J1", Number: "1", Net: "B", Layer: pcbSideBottom, X: 45, Y: 20, W: 20, H: 20},
+		{Designator: "U1", Number: "1", Net: "A", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
+		{Designator: "J1", Number: "1", Net: "B", Layer: pcbSideBottom, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
 	}
 	if rep := analyzePcbLayout(comps, smd, nil, 6); len(rep.Shorts) != 0 {
 		t.Errorf("SMD pads on opposite sides cannot short: %+v", rep.Shorts)
 	}
 
 	tht := []pcbLPad{
-		{Designator: "U1", Number: "1", Net: "A", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20},
-		{Designator: "J1", Number: "1", Net: "B", Layer: pcbLayerMulti, X: 45, Y: 20, W: 20, H: 20},
+		{Designator: "U1", Number: "1", Net: "A", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
+		{Designator: "J1", Number: "1", Net: "B", Layer: pcbLayerMulti, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
 	}
 	rep := analyzePcbLayout(comps, tht, nil, 6)
 	if len(rep.Shorts) != 1 || rep.Shorts[0].Layer != "multi" {
@@ -195,10 +195,14 @@ func TestAnalyzePcbLayout_ShortSkipsUnmeasurablePads(t *testing.T) {
 	}
 	pads := []pcbLPad{
 		{Designator: "U1", Number: "1", Net: "A", Layer: pcbSideTop, X: 45, Y: 20}, // no extent
-		{Designator: "U2", Number: "1", Net: "B", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20},
-		{Designator: "U1", Number: "2", Net: "", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20}, // no net
+		{Designator: "U2", Number: "1", Net: "B", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}},
+		{Designator: "U1", Number: "2", Net: "", Layer: pcbSideTop, X: 45, Y: 20, W: 20, H: 20, Shape: []any{"RECT", 20.0, 20.0, 0.0}}, // no net
 	}
-	if rep := analyzePcbLayout(comps, pads, nil, 6); len(rep.Shorts) != 0 {
+	rep := analyzePcbLayout(comps, pads, nil, 6)
+	if len(rep.Shorts) != 0 {
 		t.Errorf("unmeasurable / netless pads must not produce shorts: %+v", rep.Shorts)
+	}
+	if !rep.Incomplete || rep.Coverage.UnknownGeometryPads != 1 {
+		t.Fatalf("unknown pad must remain an explicit coverage gap: %+v", rep.Coverage)
 	}
 }

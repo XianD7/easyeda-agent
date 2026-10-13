@@ -95,13 +95,6 @@ type bapRollbackReport struct {
 	VerifyError           string   `json:"verifyError,omitempty"`
 }
 
-// fetchSchObstacles pulls the ACTIVE page's real primitive bboxes (best-effort)
-// so the planner can dodge them when picking the block origin.
-func fetchSchObstacles(cfg *appConfig, window string) []layoutBBox {
-	parts, _, _, _ := fetchSchObstaclesAndKeepout(cfg, window)
-	return parts
-}
-
 // schBlockObstacleBoxes 把一页的实测图元折成落点求解的障碍表 —— **全图元口径**:
 // 器件本体 + marker 的判定盒(本体 ∪ 文字带,markerJudgeBBox,与 `sch check` 的
 // marker-overlap、`sch clusters` 的虚拟组同一个函数)。图纸边框(componentType
@@ -126,8 +119,8 @@ func schBlockObstacleBoxes(comps []layoutComp) []layoutBBox {
 	return out
 }
 
-// fetchSchObstaclesAndKeepout is fetchSchObstacles plus the A4 title-block
-// keep-out derived from the same components.list round-trip (issue #141). The
+// fetchSchObstaclesAndKeepout reads the placed-part obstacles plus the A4
+// title-block keep-out derived from the same components.list round-trip (issue #141). The
 // "sheet" component spans the whole page and carries the frame bbox; feeding it
 // through titleBlockKeepout (the single source of the keep-out geometry, shared
 // with autoconnect/autolayout) yields the bottom-right 图签/明细表 rectangle so

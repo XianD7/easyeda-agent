@@ -1,27 +1,23 @@
 package app
 
-// Compatibility for old connectors that compare a placed 16-hex footprint
-// handle with a 32-hex library footprint UUID. This is a read adapter shared by
-// sch list and every Apply state guard; it never edits the schematic or an
-// on-disk snapshot, and does not weaken comparisons between real library IDs.
+// Validate typed schematic identity evidence shared by sch list and Apply.
+// Historical proof parsers below support archived evidence comparisons; fresh
+// reads never dispatch an implicit debug script to repair an old connector.
 
 import (
 	"encoding/json"
 	"fmt"
-	"maps"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
+	"unicode"
 )
 
 var schematicPlacedIdentityRE = regexp.MustCompile(`^[0-9a-fA-F]{16}$`)
 var schematicLCSCIdentityRE = regexp.MustCompile(`^C[0-9]+$`)
 
-// The old typed LCSC action neither accepts allowMultiMatch nor returns asset
-// associations. Its single-result output cannot prove uniqueness. This fixed
-// compatibility script calls only official read APIs, requests all matches and
-// returns bounded identity fields (no full properties/geometry payloads).
+// Historical fixed probe retained for offline native-source fixture regressions.
+// Fresh CLI reads no longer dispatch this script or use it as a recovery path.
 func schematicIdentityProbeCode(ids, footprintIDs []string, project, document string, searches ...schematicIdentitySearch) string {
 	b, _ := json.Marshal(ids)
 	footprints, _ := json.Marshal(footprintIDs)
@@ -409,9 +405,102 @@ func schematicIdentityCompatStableScene(c map[string]any) {
 	}
 }
 
-// Called once at the shared postAction choke point. Library reads never recurse
-// into this path. Original daemon context/sequence/error evidence is preserved.
-func hydrateSchematicIdentityCompatibility(cfg *appConfig, action, window string, payload any, body []byte, timeout time.Duration) ([]byte, error) {
+// validateSchematicTypedDeviceIdentity verifies the serialized contract of the
+// typed connector resolver, not a second copy of official Device.get evidence.
+// The connector has already checked the same-export DEVICE/FOOTPRINT origins,
+// exact supplier/model and association with context checks around each read.
+func validateSchematicTypedDeviceIdentity(c map[string]any) error {
+	for _, key := range []string{"deviceIdentityError", "deviceIdentityCompatibilityError"} {
+		if _, exists := c[key]; exists {
+			return fmt.Errorf("existing %s must remain unresolved", key)
+		}
+	}
+	device := schematicIdentityMap(c, "device")
+	if !isDeviceLibraryUUID(schematicIdentityString(device, "uuid")) || !schematicIdentityLibraryScope(schematicIdentityString(device, "libraryUuid")) {
+		return fmt.Errorf("complete 32-hex library device identity is unavailable")
+	}
+	_, hasPlaced := c["placedDevice"]
+	_, hasResolution := c["deviceResolution"]
+	if !hasPlaced && !hasResolution {
+		return nil // A direct native library reference needs no instance recovery.
+	}
+	r := schematicIdentityMap(c, "deviceResolution")
+	if r["via"] != "native-device-source" || r["sameFootprintUUID"] != true {
+		return fmt.Errorf("complete typed native-device-source proof is required; update the connector and read again")
+	}
+	placed, component := schematicIdentityMap(c, "placedDevice"), schematicIdentityMap(c, "component")
+	instance := schematicIdentityString(placed, "uuid")
+	library := schematicIdentityString(device, "libraryUuid")
+	if !schematicPlacedIdentityRE.MatchString(instance) || schematicIdentityString(component, "uuid") != instance ||
+		schematicIdentityString(placed, "libraryUuid") != library || schematicIdentityString(component, "libraryUuid") != library {
+		return fmt.Errorf("native device instance owner or library conflicts with the resolved device")
+	}
+	fp, source := schematicIdentityMap(c, "footprint"), schematicIdentityMap(r, "footprintSource")
+	fpInstance, fpLibrary := schematicIdentityString(fp, "uuid"), schematicIdentityString(fp, "libraryUuid")
+	if !schematicPlacedIdentityRE.MatchString(fpInstance) || !schematicIdentityLibraryScope(fpLibrary) ||
+		schematicIdentityString(source, "instanceUuid") != fpInstance || !isDeviceLibraryUUID(schematicIdentityString(source, "uuid")) ||
+		schematicIdentityString(source, "libraryUuid") != fpLibrary || source["sourceKind"] != "project-epro2" {
+		return fmt.Errorf("native footprint instance/source identity or library is incomplete or conflicting")
+	}
+	// The SDK may omit supplierId for a personal library device. Absence is
+	// supplier-free; an explicitly malformed field is not valid evidence.
+	supplier, supplierOK := c["supplierId"].(string)
+	_, supplierPresent := c["supplierId"]
+	if (supplierPresent && !supplierOK) || (supplier != "" && (!schematicLCSCIdentityRE.MatchString(supplier) || r["lcsc"] != supplier)) {
+		return fmt.Errorf("supplier and native source C-number evidence disagree")
+	}
+	if supplier == "" {
+		if value, present := r["lcsc"]; present && value != "" {
+			return fmt.Errorf("supplier-free device carries nonempty or malformed C-number evidence")
+		}
+	}
+	model, modelOK := c["manufacturerId"].(string)
+	if _, present := c["manufacturerId"]; present && !modelOK {
+		return fmt.Errorf("manufacturer model evidence has an invalid type")
+	}
+	if strings.TrimSpace(model) == "" && schematicTypedStableDeviceName(c) == "" {
+		return fmt.Errorf("native source proof has no exact model or stable device name")
+	}
+	return nil
+}
+
+func schematicIdentityLibraryScope(value string) bool {
+	return value != "" && !strings.ContainsRune(value, '|') && strings.IndexFunc(value, unicode.IsSpace) < 0
+}
+
+func schematicTypedStableDeviceName(c map[string]any) string {
+	for _, owner := range []map[string]any{schematicIdentityMap(c, "component"), c, schematicIdentityMap(c, "placedDevice")} {
+		name := schematicIdentityString(owner, "name")
+		if strings.TrimSpace(name) != "" && !strings.HasPrefix(name, "=") {
+			return name
+		}
+	}
+	return ""
+}
+
+func schematicTypedIdentityContext(cfg *appConfig, envelope map[string]any) error {
+	context := schematicIdentityMap(envelope, "context")
+	project, doc := schematicIdentityString(context, "projectUuid"), schematicIdentityString(context, "documentUuid")
+	if project == "" || doc == "" || context["documentType"] != "schematic" {
+		return fmt.Errorf("typed identity requires a complete schematic project/document response context")
+	}
+	if cfg != nil {
+		if cfg.project != "" && cfg.project != project && cfg.project != schematicIdentityString(context, "projectName") {
+			return fmt.Errorf("typed identity response project differs from the requested project")
+		}
+		// --doc also accepts names, which are resolved and checked by the live
+		// document guard. The response context contains only a document UUID.
+		if (schematicPlacedIdentityRE.MatchString(cfg.doc) || isDeviceLibraryUUID(cfg.doc)) && cfg.doc != doc {
+			return fmt.Errorf("typed identity response document differs from the requested document")
+		}
+	}
+	return nil
+}
+
+// This shared postAction boundary is pure local validation: it never calls a
+// daemon/connector action. Healthy typed responses remain byte-for-byte intact,
+// and unsupported records retain every original field and diagnostic.
+func validateSchematicIdentityRead(cfg *appConfig, action string, payload any, body []byte) ([]byte, error) {
 	if action != "schematic.components.list" {
 		return body, nil
 	}
@@ -428,127 +517,28 @@ func hydrateSchematicIdentityCompatibility(cfg *appConfig, action, window string
 	}
 	result := schematicIdentityMap(envelope, "result")
 	rows, _ := result["components"].([]any)
-	var needing []map[string]any
-	ids := map[string]bool{}
+	changed := false
 	for _, item := range rows {
 		c, ok := item.(map[string]any)
-		if ok && needsSchematicIdentityCompat(c) {
-			needing = append(needing, c)
-			if supplier := schematicIdentityString(c, "supplierId"); supplier != "" {
-				ids[supplier] = true
-			}
+		if !ok || schematicIdentityString(c, "componentType") != "part" {
+			continue
+		}
+		problem := validateSchematicTypedDeviceIdentity(c)
+		if problem == nil {
+			problem = schematicTypedIdentityContext(cfg, envelope)
+		}
+		if problem == nil {
+			continue
+		}
+		// Never overwrite or clear old diagnostics, including malformed values.
+		// measuredSchematicDevice also validates this contract before replay.
+		if _, exists := c["deviceIdentityCompatibilityError"]; !exists {
+			c["deviceIdentityCompatibilityError"] = "unsupported typed device identity: " + problem.Error()
+			changed = true
 		}
 	}
-	if len(needing) == 0 {
+	if !changed {
 		return body, nil
-	}
-	fail := func(reason string) ([]byte, error) {
-		for _, c := range needing {
-			c["deviceIdentityCompatibilityError"] = reason
-		}
-		return json.Marshal(envelope)
-	}
-	if dispatchDryRunActive() {
-		return fail("legacy identity lookup is unavailable in dry-run; no debug action was dispatched")
-	}
-	context := schematicIdentityMap(envelope, "context")
-	project, doc := schematicIdentityString(context, "projectUuid"), schematicIdentityString(context, "documentUuid")
-	if project == "" || doc == "" {
-		return fail("legacy identity lookup requires a fixed project/document response context")
-	}
-	footprintIDs := []string{}
-	seenFootprints := map[string]bool{}
-	for _, c := range needing {
-		id := schematicIdentityString(schematicIdentityMap(c, "footprint"), "uuid")
-		if !seenFootprints[id] {
-			seenFootprints[id] = true
-			footprintIDs = append(footprintIDs, id)
-		}
-	}
-	sort.Strings(footprintIDs)
-	ordered := make([]string, 0, len(ids))
-	for id := range ids {
-		ordered = append(ordered, id)
-	}
-	sort.Strings(ordered)
-	searches := schematicIdentitySearches(needing)
-	if len(ordered) > 64 {
-		return fail("legacy identity lookup exceeds 64 distinct C-numbers; upgrade connector or read a smaller page")
-	}
-	if len(searches) > 128 {
-		return fail("legacy identity lookup exceeds 128 scoped model queries; read a smaller page")
-	}
-	// Copy the routing configuration instead of changing the caller's project or
-	// document selection. The response context must still agree after the probe.
-	scoped := *cfg
-	scoped.project = project
-	scoped.doc = "" // library reads need no navigation; reject context drift after the probe
-	probeResult, err := requestActionTimed(&scoped, "debug.exec_js", window, map[string]any{"code": schematicIdentityProbeCode(ordered, footprintIDs, project, doc, searches...)}, timeout)
-	if err != nil {
-		return fail("legacy identity lookup failed: " + err.Error())
-	}
-	if probeResult.Context == nil || probeResult.Context.ProjectUUID != project || probeResult.Context.DocumentUUID != doc {
-		return fail("project/document changed during identity lookup")
-	}
-	raw, err := json.Marshal(probeResult.Result["value"])
-	if err != nil {
-		return fail("invalid identity proof")
-	}
-	var proof schematicIdentityProbe
-	if err = json.Unmarshal(raw, &proof); err != nil {
-		return fail("invalid identity proof: " + err.Error())
-	}
-	if proof.SchemaVersion != 1 || !proof.Query.AllowMultiMatch || len(proof.Query.LCSCIDs) != len(ordered) || proof.Candidates == nil || len(proof.Candidates) > 128 {
-		return fail("incomplete all-candidate identity proof")
-	}
-	actual := append([]string(nil), proof.Query.LCSCIDs...)
-	sort.Strings(actual)
-	for i, id := range ordered {
-		if actual[i] != id {
-			return fail("identity proof query differs from requested C-numbers")
-		}
-	}
-	if len(proof.Query.Searches) != len(searches) {
-		return fail("identity proof scoped searches differ from requested model/library queries")
-	}
-	for i, query := range searches {
-		if proof.Query.Searches[i] != query {
-			return fail("identity proof scoped searches differ from requested model/library queries")
-		}
-	}
-	for _, c := range needing {
-		instanceFootprintUUID := schematicIdentityString(schematicIdentityMap(c, "footprint"), "uuid")
-		native, err := schematicNativeFootprintIdentity(instanceFootprintUUID, proof.NativeFootprints)
-		if proof.SourceError != "" {
-			err = fmt.Errorf("native footprint source query failed: %s", proof.SourceError)
-		}
-		if err != nil {
-			c["deviceIdentityCompatibilityError"] = err.Error()
-			continue
-		}
-		hit, err := resolveSchematicIdentityCompat(c, proof.Candidates, native)
-		if err != nil {
-			c["deviceIdentityCompatibilityError"] = err.Error()
-			continue
-		}
-		original := maps.Clone(schematicIdentityPlacedDevice(c))
-		previousError := c["deviceIdentityError"]
-		c["placedDevice"] = original
-		c["device"] = map[string]any{"uuid": hit.UUID, "libraryUuid": hit.LibraryUUID, "name": schematicIdentityString(c, "name")}
-		resolution := map[string]any{"via": "lcsc-footprint-source", "resolver": "cli-legacy-placed-footprint-v1", "lcsc": hit.SupplierID, "footprint": hit.Footprint.Name, "instanceFootprint": c["footprint"], "libraryFootprint": hit.Device.Footprint, "footprintSource": map[string]string{"instanceUuid": instanceFootprintUUID, "uuid": native.UUID, "libraryUuid": native.LibraryUUID}, "sameFootprintUUID": true, "proof": "all LCSC candidates; exact MPN or stable device name; native footprint META.source matches official Device.get asset association", "connectorError": previousError, "probeId": probeResult.ID}
-		if hit.SupplierID == "" {
-			resolution["via"] = "scoped-library-footprint-source"
-			resolution["proof"] = "all scoped library candidates; exact MPN or stable device name; native footprint META.source matches official Device.get asset association"
-			delete(resolution, "lcsc")
-		}
-		for _, entry := range proof.NativeFootprints {
-			if entry.FootprintUUID == instanceFootprintUUID && entry.SourceKind != "" {
-				resolution["sourceKind"] = entry.SourceKind
-			}
-		}
-		c["deviceResolution"] = resolution
-		delete(c, "deviceIdentityError")
-		delete(c, "deviceIdentityCompatibilityError")
 	}
 	return json.Marshal(envelope)
 }

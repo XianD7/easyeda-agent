@@ -23,7 +23,6 @@ import (
 // Aliases keep the app-side names stable over the shared workflow types.
 type (
 	pcbStage             = workflow.Stage
-	pcbStageEvent        = workflow.Event
 	pcbStageState        = workflow.State
 	pcbAssemblyProfile   = workflow.AssemblyProfile
 	pcbLayoutGateSummary = workflow.GateSummary

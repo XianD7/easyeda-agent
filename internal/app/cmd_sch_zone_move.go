@@ -469,12 +469,6 @@ func (s *zoneMoveIDSet) sorted(m map[string]bool) []string {
 	return out
 }
 
-func (s *zoneMoveIDSet) all() []string {
-	out := s.sorted(s.comp)
-	out = append(out, s.sorted(s.wire)...)
-	return append(out, s.sorted(s.flag)...)
-}
-
 func runSchZoneMove(cfg *appConfig, window, zoneRef string, dx, dy, textPad float64, force, dryRun, redraw bool, stdout, stderr io.Writer) error {
 	pinned, win, docUUID, err := pinZonePage(cfg, window)
 	if err != nil {

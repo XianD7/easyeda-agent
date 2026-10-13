@@ -40,7 +40,7 @@ func newPcbLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 		Use:   "layout-score",
 		Short: "Score placement quality across 9 dimensions, with per-component attribution",
 		Long: "把「好布局」拆成多维可计算分数(#167)。与 `pcb layout-lint` 的分工：\n\n" +
-			"  layout-lint   单标量可布性分 + 布线前硬门。一处重叠就把分数打成 0，\n" +
+			"  layout-lint   单标量可布性分 + 几何错误检查。一处重叠就把分数打成 0，\n" +
 			"                其它维度的差异全被抹平 —— 看不出布局到底好在哪差在哪。\n" +
 			"  layout-score  九维各自 0-100 + 每维「是哪几个器件拉低了它」。硬错不再\n" +
 			"                抹平分数，而是单列 blocking 一票否决。\n\n" +
@@ -48,7 +48,9 @@ func newPcbLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 			"      protection(保护件/去耦就近) tidy(齐整度) compact(紧凑度) rf(射频)\n" +
 			"      routable(可布性) clearance(装配间距)\n\n" +
 			"意图类维度（flow-order / edge-io 的 internal 判定）需要 --spec；没给就标\n" +
-			"skipped 而不是给满分 —— 「没测」和「测了满分」在报告里必须可区分。",
+			"skipped 而不是给满分 —— 「没测」和「测了满分」在报告里必须可区分。\n\n" +
+			"coverage/incomplete 报告库存缺测、未知/不支持的焊盘几何和旧宽高近似。\n" +
+			"普通诊断仍输出分数；显式 --min-score 对必要覆盖不完整返回非零。",
 		Example: "  # 给当前板打分\n" +
 			"  easyeda pcb layout-score --project ceshi\n\n" +
 			"  # 带 S0 意图（解锁 flow-order 与 internal 连接器判定）\n" +
@@ -154,6 +156,9 @@ func newPcbLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 			if len(rep.Blocking) > 0 {
 				return fmt.Errorf("layout has %d blocking issue(s)", len(rep.Blocking))
 			}
+			if minScore > 0 && rep.Incomplete {
+				return fmt.Errorf("layout geometry inspection is incomplete; cannot satisfy --min-score %.1f", minScore)
+			}
 			if minScore > 0 && rep.Overall < minScore {
 				return fmt.Errorf("layout score %.1f below --min-score %.1f", rep.Overall, minScore)
 			}
@@ -163,7 +168,7 @@ func newPcbLayoutScoreCmd(cfg *appConfig, window *string, stdout, stderr io.Writ
 	c.Flags().StringVar(&specPath, "spec", "", "S0 spec JSON — unlocks the intent dimensions (flow-order, internal connectors)")
 	c.Flags().StringVar(&fromPath, "from", "", "score a snapshot file from `pcb dump` instead of the live board (offline)")
 	c.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON")
-	c.Flags().Float64Var(&minScore, "min-score", 0, "fail (non-zero exit) when the weighted overall falls below this")
+	c.Flags().Float64Var(&minScore, "min-score", 0, "fail when geometry inspection is incomplete or the weighted overall falls below this")
 	c.Flags().StringSliceVar(&only, "only", nil, "score only these dimensions (comma-separated)")
 	c.Flags().StringSliceVar(&skip, "skip", nil, "skip these dimensions (comma-separated)")
 	c.Flags().StringArrayVar(&weights, "weight", nil, "override a dimension weight, e.g. --weight tidy=1.5 (repeatable)")

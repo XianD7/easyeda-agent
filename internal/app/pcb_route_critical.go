@@ -281,18 +281,6 @@ func planPairRoute(comps []apComp, pair rcDiffPair, routed map[string]bool, opt 
 
 // ── commands ────────────────────────────────────────────────────────────────
 
-func splitCSVList(items []string) []string {
-	var out []string
-	for _, s := range items {
-		for _, p := range strings.Split(s, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				out = append(out, p)
-			}
-		}
-	}
-	return out
-}
-
 // newPcbRouteCriticalCmd builds `pcb route-critical` — the P7.0 orchestrator.
 func newPcbRouteCriticalCmd(cfg *appConfig, window *string, stdout, stderr io.Writer) *cobra.Command {
 	var (

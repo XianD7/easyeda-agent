@@ -174,7 +174,7 @@ func validateSchCompositionTitleBlock(fields schCompositionTitleBlock) error {
 }
 
 func newSchComposeCmd(stdout, stderr io.Writer) *cobra.Command {
-	var from, out, before, playbookOut, layoutPage string
+	var from, out, before, playbookOut, layoutPage, connectivityEdits string
 	var replace, preserveInstances bool
 	c := &cobra.Command{Use: "compose", Short: "Compose authored Lib circuits onto one sheet and compile a guarded SCH Apply", Long: `Read schemaVersion:1 composition data containing connectivity (complete 1.4 IR),
 sheet, keepouts, optional per-page titleBlock text and ordered modules
@@ -213,6 +213,12 @@ verification/frame steps. Apply always verifies pins before drawing wires.
 --preserve-instances requires --replace, --before and --playbook. It preserves
 the exact existing part instances and attributes while rebuilding drawing
 content. Same bound parts must use this mode instead of destructive replacement.
+Changing connected/NC states requires --connectivity-edits: a schemaVersion:1
+JSON with beforeSha256/sourceSha256 (exact --before/--from bytes), and pins rows
+{componentId,ref,pinNumber,pinName,before:{net,noConnected},after:{net,noConnected}}.
+List every changed physical pin exactly once. Missing, extra, duplicate or stale
+deltas are refused; device identities, pin names and all instance data stay fixed.
+NC removals use explicit typed writes and all NC states are read back before wiring.
 Other pages may contain different parts; duplicate designators are refused before mutation.
 Optional --layout-page consumes one selected layout-sheet-plan page. It verifies
 the source modules, canonical membership/pin intent and exact paper evidence, then
@@ -228,6 +234,8 @@ modules move as rigid units; the derived sheet field is a virtual validation
 envelope, not EDA paper.
 The target must have zero physical sheets. A fully unwired bound page can retain
 its native part instances while adding NC, wires and markers without clearing.
+An existing wired page can use --preserve-instances with the same protected,
+explicit drawing-only reset used on physical sheets; unknown graphics refuse it.
 Its Apply gate checks geometry, nets, bridges and DRC but cannot run the strict
 paper-boundary stage; save/reload and compare the complete plan afterward.
 No automatic pagination, symbol scaling or source-page deletion is performed.`, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
@@ -237,7 +245,10 @@ No automatic pagination, symbol scaling or source-page deletion is performed.`, 
 		if preserveInstances && (!replace || before == "" || playbookOut == "") {
 			return fmt.Errorf("--preserve-instances requires --replace, --before and --playbook")
 		}
-		if err := validateSchCompositionOutputPaths([]string{from, before, layoutPage}, []string{out, playbookOut}); err != nil {
+		if connectivityEdits != "" && !preserveInstances {
+			return fmt.Errorf("--connectivity-edits requires --preserve-instances")
+		}
+		if err := validateSchCompositionOutputPaths([]string{from, before, layoutPage, connectivityEdits}, []string{out, playbookOut}); err != nil {
 			return err
 		}
 		raw, err := os.ReadFile(from)
@@ -282,7 +293,18 @@ No automatic pagination, symbol scaling or source-page deletion is performed.`, 
 			if err != nil {
 				return err
 			}
-			pb, err := schCompositionPlaybook(plan, b, replace, preserveInstances)
+			var edits *schConnectivityEdits
+			if connectivityEdits != "" {
+				delta, err := os.ReadFile(connectivityEdits)
+				if err != nil {
+					return err
+				}
+				edits, err = decodeSchConnectivityEdits(delta, b, raw)
+				if err != nil {
+					return err
+				}
+			}
+			pb, err := schCompositionPlaybookWithEdits(plan, b, replace, preserveInstances, edits)
 			if err != nil {
 				return err
 			}
@@ -319,6 +341,7 @@ No automatic pagination, symbol scaling or source-page deletion is performed.`, 
 	c.Flags().StringVar(&playbookOut, "playbook", "", "also write ordered SCH Apply queue")
 	c.Flags().BoolVar(&replace, "replace", false, "compile a guarded reset of a differing target, preserving its sheet")
 	c.Flags().BoolVar(&preserveInstances, "preserve-instances", false, "with --replace, retain exact existing part IDs/properties and rebuild only drawing content")
+	c.Flags().StringVar(&connectivityEdits, "connectivity-edits", "", "with --preserve-instances, exact hash-bound JSON pin net/NC delta; missing or stale edits are refused")
 	c.Flags().StringVar(&layoutPage, "layout-page", "", "selected complete layout-sheet-plan page: preserve its geometry, frames and spacing instead of repacking; requires matching source modules and explicit sheetBorder")
 	return c
 }
@@ -743,10 +766,16 @@ func projectDesignatorGuardStep(source *schematicStateExpectation) playbookStep 
 }
 
 func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, preserveMode ...bool) (*playbook, error) {
+	return schCompositionPlaybookWithEdits(p, before, replace, len(preserveMode) > 0 && preserveMode[0], nil)
+}
+
+func schCompositionPlaybookWithEdits(p *schCompositionPlan, before []byte, replace, preserve bool, edits *schConnectivityEdits) (*playbook, error) {
 	if err := validateSchCompositionTitleBlock(p.TitleBlock); err != nil {
 		return nil, err
 	}
-	preserve := len(preserveMode) > 0 && preserveMode[0]
+	if edits != nil && !preserve {
+		return nil, fmt.Errorf("--connectivity-edits requires --preserve-instances")
+	}
 	if preserve && !replace {
 		return nil, fmt.Errorf("--preserve-instances requires --replace")
 	}
@@ -773,7 +802,7 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 	var preserved *schPreservedParts
 	if preserve {
 		var err error
-		preserved, err = prepareSchPreservedParts(p, before, unwiredSource)
+		preserved, err = prepareSchPreservedParts(p, before, unwiredSource, edits)
 		if err != nil {
 			return nil, fmt.Errorf("preserve-instances: %w", err)
 		}
@@ -824,8 +853,8 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 	}
 	matchError := final.check(env.Result, nil)
 	matches := matchError == nil
-	if p.Paperless && !matches && (preserved == nil || !unwiredSource) {
-		return nil, fmt.Errorf("paperless Apply currently requires a matching page or a fully unwired bound part set with --preserve-instances; no protected paperless clear path is available")
+	if p.Paperless && !matches && preserved == nil {
+		return nil, fmt.Errorf("paperless Apply requires a matching page or a bound part set with --preserve-instances for a protected drawing-only reset")
 	}
 	if !matches && !replace {
 		return nil, fmt.Errorf("target differs from the planned circuit; use --replace with its fresh snapshot to compile a guarded rebuild: %w", matchError)
@@ -907,6 +936,10 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 			preserved.protect(baseline)
 		}
 		baseline.SourceScene = sourceScene
+		baseline.SourceConnectivityEdits = edits
+		if preserved != nil && unwiredSource {
+			baseline.SourceConnectivityProvenance = preserved.SourceConnectivityProvenance
+		}
 		if err := baseline.check(env.Result, nil); err != nil {
 			return nil, fmt.Errorf("incomplete before snapshot: %w", err)
 		}
@@ -949,6 +982,7 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 				}
 				cleared := cloneSchExpectation(baseline)
 				cleared.SourceScene = nil
+				cleared.SourceConnectivityEdits = nil
 				cleared.PagePrimitives = remaining
 				cleared.Drawing = &schematicDrawingExpectation{}
 				for ref, part := range cleared.Parts {
@@ -990,6 +1024,22 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 		}
 		pb.Steps = append(pb.Steps, playbookStep{ID: "verify-physical-pins-before-wiring", Action: "schematic.components.list", Payload: read, ExpectSchematic: unwired})
 		pb.Steps = append(pb.Steps, playbookStep{ID: "save-placed-parts", Action: "schematic.save", Assert: map[string]string{"$.saved": "true"}})
+		if edits != nil {
+			for i, c := range p.Connectivity.Components {
+				var pins []string
+				for _, q := range preserved.Parts[c.Ref]["pins"].([]any) {
+					pin := q.(map[string]any)
+					number := schDesignatorPinNumber(pin)
+					if pin["noConnected"] == true && !desiredNC[c.Ref+"."+number] {
+						pins = append(pins, number)
+					}
+				}
+				sort.Strings(pins)
+				if len(pins) > 0 {
+					pb.Steps = append(pb.Steps, playbookStep{ID: fmt.Sprintf("clear-nc-%03d", i), Action: "schematic.pin.set_no_connect", Payload: map[string]any{"designator": c.Ref, "pins": pins, "noConnected": false}, Assert: map[string]string{"$.notApplied": "len==0"}})
+				}
+			}
+		}
 		for i, c := range p.Connectivity.Components {
 			pins := []string{}
 			for _, q := range c.Pins {
@@ -1001,6 +1051,20 @@ func schCompositionPlaybook(p *schCompositionPlan, before []byte, replace bool, 
 			if len(pins) > 0 {
 				pb.Steps = append(pb.Steps, playbookStep{ID: fmt.Sprintf("nc-%03d", i), Action: "schematic.pin.set_no_connect", Payload: map[string]any{"designator": c.Ref, "pins": pins, "noConnected": true}, Assert: map[string]string{"$.notApplied": "len==0"}})
 			}
+		}
+		if edits != nil {
+			ready := schCompositionExpectation(p, true)
+			preserved.protect(ready)
+			ready.Drawing = &schematicDrawingExpectation{}
+			ready.Ownership = nil
+			for ref, part := range ready.Parts {
+				for number, pin := range part.Pins {
+					pin.Net = nil // disconnected net names may be unavailable before wires exist
+					part.Pins[number] = pin
+				}
+				ready.Parts[ref] = part
+			}
+			pb.Steps = append(pb.Steps, playbookStep{ID: "verify-edited-nc-before-wiring", Action: "schematic.components.list", Payload: read, ExpectSchematic: ready})
 		}
 		for i, w := range p.Layout.Wires {
 			pb.Steps = append(pb.Steps, playbookStep{ID: fmt.Sprintf("wire-%03d", i), Action: "schematic.wire.create", Payload: map[string]any{"points": w.Points}})

@@ -38,8 +38,10 @@ easyeda sch sheet-geometry --project <project> --json
 
 ## 2. 离线计算模块与单页组合
 
-普通 zones 的本地效果先走固定链路：
-`layout-plan --zones → layout-sheet-plan → layout-render`，所有区完整通过才出效果。
+先选择几何生成方式，结果统一满足[数据契约](schematic-data.md#数据驱动架构基准)。
+普通 zones 可用 `layout-plan --zones → layout-sheet-plan → layout-render`；完整 authored
+Lib 几何可直接走 `compose --from`，无需先通过同一个求解器。下面的搜索预算、姿态和
+分行规则仅描述对应工具入口。所有选定模块完整通过检查后，才组成可执行候选。
 输入顶层 spacing 统一内边距、框间距和页边距；区内回退只影响本区，整页仅平移区框。
 只看完整区内布局时，可将成功的 `layout-plan --zones` 输出直接交给
 `sch layout-render --from zones-geometry.json --out local.svg`，暂不提供 sheet；
@@ -69,10 +71,10 @@ bridge、DRC、保存重载和完整 Compose 对账。不得将离线成功或 d
 （原 Lib 输入加 `--lib`，普通多区加 `--zones`）。每件独立命名后按包络分行摆放，
 不设纸张上限；不能和 `--unbounded` 或 optimization 同用。连接/归属/NC 不改，
 direct/attachment 的绘图直连要求由这个显式选择替代；默认工作流仍要求真实直连。
-纸张默认 `--flow z`：输入功能顺序从左到右、同行顶齐，下一行按该行最高框推进；
-不补短框下空洞，不回填旧页。同页集合按最早成员聚拢、成员顺序不变，整体试放或换页。
-旧自由装箱需显式 `--flow compact`，不能为减少页数悄悄改变用户要求的 Z 型阅读流。
-修改阅读流后重新生成 pages，不能直接沿用仅通过碰撞检测的旧 sheetPosition。
+`layout-sheet-plan` 默认 `--flow z`：功能顺序从左到右、同行顶齐，下一行按最高框推进；
+不补短框下空洞。同页集合按最早成员聚拢，整体试放或换页。用户未指定阅读流时，Agent
+可按可读性选择该策略、显式 `--flow compact` 或 authored 组合；已指定的阅读顺序须保留。
+变更策略后重新生成并检查几何，不能直接沿用旧 sheetPosition。
 用户只授权预览时止于离线结果，不执行下文 Apply。诊断模式不能替代完整候选；
 保留源数据、参数、源码提交和输出哈希，使相同输入能重现同一图面。
 复杂直连网络在源输入顶层使用可选

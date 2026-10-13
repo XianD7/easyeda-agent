@@ -537,9 +537,6 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 		geo = append(geo, checkFinding{Type: "partition-geometry-unavailable", Level: "ERROR", Message: "multi-page shallow reads cannot verify frame/Designator geometry; run sch check separately with --doc for each page"})
 	}
 
-	if len(geo) == 0 {
-		return
-	}
 	rep.Findings = append(rep.Findings, geo...)
 	for _, f := range geo {
 		switch f.Type {
@@ -564,7 +561,10 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 		}
 	}
 	rep.Summary.Total = len(rep.Findings)
-	rep.Passed = len(rep.Findings) == 0
+	// INFO remains advisory after merging Go-side geometry, just as it does in
+	// the connector and --strict exit decision. Recompute even without new
+	// geometry findings so an older connector's INFO-only verdict is consistent.
+	rep.Passed = blockingCheckFindings(*rep, true) == 0
 }
 
 // ── redundant-net-marker(同树冗余标志)────────────────────────────────────

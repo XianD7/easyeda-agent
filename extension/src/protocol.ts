@@ -104,6 +104,10 @@ export interface ResponseFrame {
 	ok: boolean;
 	result?: Record<string, unknown>;
 	context?: ResponseContext;
+	/** Handler-boundary identity evidence; context alone is a post-action diagnostic. */
+	mutationContext?: ResponseContext;
+	mutationContextAvailable?: boolean;
+	mutationContextError?: string;
 	artifacts?: Array<ResponseArtifact>;
 	warnings?: Array<string>;
 	error?: ResponseError;
@@ -170,6 +174,9 @@ export interface ActionResult {
 	artifacts?: Array<ResponseArtifact>;
 	warnings?: Array<string>;
 	context?: ResponseContext;
+	mutationContext?: ResponseContext;
+	mutationContextAvailable?: boolean;
+	mutationContextError?: string;
 }
 
 /**

@@ -24,8 +24,20 @@ func FromRead(m map[string]any) (Document, error) {
 		if x["componentType"] != "part" {
 			continue
 		}
+		if available, declared := m["pinNetsAvailable"].(bool); declared && !available {
+			return d, fmt.Errorf("pin net evidence unavailable; cannot construct connectivity")
+		}
 		ref, _ := x["designator"].(string)
-		c := Component{ID: "cmp-" + ref, Ref: ref}
+		if ambiguous, _ := x["netAmbiguous"].(bool); ambiguous {
+			return d, fmt.Errorf("%s: pin net attribution ambiguous; cannot construct connectivity", ref)
+		}
+		if unavailable, _ := x["pinNetsUnavailable"].(bool); unavailable {
+			return d, fmt.Errorf("%s: pin net evidence unavailable; cannot construct connectivity", ref)
+		}
+		if available, declared := x["netlistAvailable"].(bool); declared && !available {
+			return d, fmt.Errorf("%s: pin net evidence unavailable; cannot construct connectivity", ref)
+		}
+		c := Component{ID: "cmp-" + ref, Ref: ref, UniqueID: stringField(x, "uniqueId")}
 		if properties, ok := x["otherProperty"].(map[string]any); ok {
 			if id, exists, err := componentBinding(properties, ComponentIDProperty); err != nil {
 				return d, fmt.Errorf("%s: %w", ref, err)
@@ -47,6 +59,13 @@ func FromRead(m map[string]any) (Document, error) {
 			}
 		}
 		c.Footprint = stringField(x, "footprint")
+		if footprint, ok := x["footprint"].(map[string]any); ok {
+			c.Footprint = stringField(footprint, "uuid")
+			c.FootprintRef = make(map[string]any, len(footprint))
+			for key, value := range footprint {
+				c.FootprintRef[key] = value
+			}
+		}
 		if xv, xok := numberValue(x["x"]); xok {
 			if yv, yok := numberValue(x["y"]); yok {
 				c.Placement = &Placement{X: xv, Y: yv}

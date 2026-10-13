@@ -1114,6 +1114,9 @@ async function handleRequest(request: RequestFrame): Promise<void> {
 			if (result.context !== undefined) {
 				response.context = result.context;
 			}
+			if (result.mutationContext !== undefined) response.mutationContext = result.mutationContext;
+			if (result.mutationContextAvailable !== undefined) response.mutationContextAvailable = result.mutationContextAvailable;
+			if (result.mutationContextError !== undefined) response.mutationContextError = result.mutationContextError;
 			if (result.artifacts !== undefined && result.artifacts.length > 0) {
 				response.artifacts = result.artifacts;
 			}

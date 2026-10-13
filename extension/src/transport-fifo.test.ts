@@ -22,7 +22,7 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 
-type Frame = { type: string; id?: string; seq?: number; seqAbandoned?: number; unordered?: boolean; ok?: boolean; error?: { code: string; detail?: string } };
+type Frame = { type: string; id?: string; seq?: number; seqAbandoned?: number; unordered?: boolean; ok?: boolean; error?: { code: string; detail?: string }; mutationContextAvailable?: boolean; mutationContext?: { documentUuid: string }; mutationContextError?: string };
 
 const sent: Frame[] = [];
 let capturedOnMessage: ((event: { data: string }) => void) | null = null;
@@ -52,7 +52,7 @@ let releaseRoundtrip: (() => void) | undefined;
 // exports 就能把真实 handler 换成可控时序的假实现,而 transport 本身是真的。
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const actions = require('./actions') as { runAction: unknown };
-actions.runAction = async (action: string): Promise<{ result: Record<string, unknown> }> => {
+actions.runAction = async (action: string) => {
 	events.push(`enter ${action}`);
 	if (action === 'slow.write') {
 		await new Promise((r) => setTimeout(r, 150));
@@ -61,7 +61,9 @@ actions.runAction = async (action: string): Promise<{ result: Record<string, unk
 		await new Promise<void>(resolve => { releaseRoundtrip = resolve; });
 	}
 	events.push(`exit ${action}`);
-	return { result: { action } };
+	return { result: { action }, mutationContext: { documentUuid: 'captured-document' },
+		mutationContextAvailable: action !== 'slow.write',
+		...(action === 'slow.write' ? { mutationContextError: 'document changed' } : {}) };
 };
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -116,7 +118,11 @@ test('transport:同 tick 到达的动作按到达顺序串行,响应带顺序证
 		'fast.read 的 seq 必须严格大于 slow.write —— 这就是「读的 handler 在写 settle 之后才开跑」的可传输形式');
 	for (const r of responses) {
 		assert.equal(r.seqAbandoned, 0, '本用例没有任何动作被放弃');
+		assert.deepEqual(r.mutationContext, { documentUuid: 'captured-document' });
 	}
+	assert.equal(byId.get('req-slow')?.mutationContextAvailable, false, 'false certification must survive the wire');
+	assert.equal(byId.get('req-slow')?.mutationContextError, 'document changed');
+	assert.equal(byId.get('req-fast')?.mutationContextAvailable, true);
 
 	transport.stop(false);
 });

@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { runAction } from './actions';
+import { ActionError, ErrorCodes } from './protocol';
 
 function attribute(id: string, keyVisible: unknown, valueVisible: unknown, reset?: () => Promise<unknown>): any {
 	return {
@@ -13,21 +14,36 @@ function attribute(id: string, keyVisible: unknown, valueVisible: unknown, reset
 	};
 }
 
-function installHost(bulk: unknown, direct: unknown, afterDocument = 'page-1') {
+function installHost(bulk: unknown, direct: unknown, driftAt?: 'getAll' | 'get' | 'reset') {
 	const globals = globalThis as any;
 	const previousEda = globals.eda;
 	const previousTypes = globals.EDMT_EditorDocumentType;
-	let documentReads = 0;
+	let activeDocument = 'page-1';
 	let writes = 0;
+	const reads: string[] = [];
+	const readEvent = (event: string) => {
+		reads.push(event);
+		if (event === driftAt) activeDocument = 'page-2';
+	};
+	const directWithReset = direct ? Object.assign(Object.create(direct), {
+		toAsync: () => {
+			const asyncAttribute = (direct as any).toAsync();
+			return { ...asyncAttribute, reset: async () => {
+				const value = await asyncAttribute.reset();
+				readEvent('reset');
+				return value;
+			} };
+		},
+	}) : direct;
 	globals.EDMT_EditorDocumentType = { HOME: -1, BLANK: 0, SCHEMATIC_PAGE: 1, PCB: 3 };
 	globals.eda = {
 		dmt_Project: { getCurrentProjectInfo: async () => ({ uuid: 'project-1' }) },
 		dmt_SelectControl: { getCurrentDocumentInfo: async () => ({
-			uuid: ++documentReads >= 2 ? afterDocument : 'page-1', tabId: 'tab-1', documentType: 1,
+			uuid: activeDocument, tabId: 'tab-1', documentType: 1,
 		}) },
 		sch_PrimitiveAttribute: {
-			getAll: async () => [bulk],
-			get: async () => direct,
+			getAll: async () => { readEvent('getAll'); return [bulk]; },
+			get: async () => { readEvent('get'); return directWithReset; },
 			modify: async () => { writes++; throw new Error('design write attempted'); },
 		},
 		sch_Document: { save: async () => { writes++; throw new Error('design write attempted'); } },
@@ -35,6 +51,8 @@ function installHost(bulk: unknown, direct: unknown, afterDocument = 'page-1') {
 	};
 	return {
 		writes: () => writes,
+		reads,
+		activeDocument: () => activeDocument,
 		restore: () => {
 			if (previousEda === undefined) delete globals.eda;
 			else globals.eda = previousEda;
@@ -84,14 +102,23 @@ test('attribute inspect reports three unreadable paths without design writes', a
 	finally { host.restore(); }
 });
 
-test('attribute inspect refuses document drift', async () => {
-	const host = installHost(attribute('attr-1', false, true), attribute('attr-1', false, true), 'page-2');
-	try {
-		await assert.rejects(() => runAction('schematic.attribute.inspect', { primitiveId: 'attr-1' }), /identity changed/);
-		assert.equal(host.writes(), 0);
-	}
-	finally { host.restore(); }
-});
+for (const driftAt of ['getAll', 'get', 'reset'] as const) {
+	test(`attribute inspect refuses document drift during ${driftAt}`, async () => {
+		const host = installHost(attribute('attr-1', false, true), attribute('attr-1', false, true), driftAt);
+		try {
+			await assert.rejects(() => runAction('schematic.attribute.inspect', { primitiveId: 'attr-1' }), (err: unknown) => {
+				assert.ok(err instanceof ActionError);
+				assert.equal(err.code, ErrorCodes.PRECONDITION_REFUSED);
+				assert.match(err.message, /identity changed/);
+				return true;
+			});
+			assert.ok(host.reads.includes(driftAt), 'drift must happen at the official attribute read');
+			assert.equal(host.activeDocument(), 'page-2');
+			assert.equal(host.writes(), 0);
+		}
+		finally { host.restore(); }
+	});
+}
 
 test('attribute inspect refuses an unrelated direct primitive', async () => {
 	const host = installHost(attribute('attr-1', false, true), attribute('attr-2', false, true));

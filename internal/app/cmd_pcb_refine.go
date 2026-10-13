@@ -142,7 +142,12 @@ func runRefineLoop(cfg *appConfig, window string, s0 *spec.Spec, opts refineOpts
 		return rep, err
 	}
 	if len(snap.Components) == 0 {
+		rep.Coverage = snap.geometryCoverage(true)
+		rep.Incomplete = !rep.Coverage.Complete
 		rep.Summary = "board has no components — nothing to refine"
+		if rep.Incomplete {
+			rep.Summary += "; component inventory unverified"
+		}
 		return rep, nil
 	}
 
@@ -267,6 +272,10 @@ func runRefineLoop(cfg *appConfig, window string, s0 *spec.Spec, opts refineOpts
 	}
 
 	rep.ScoreAfter = cur.Overall
+	rep.Coverage, rep.Incomplete = cur.Coverage, cur.Incomplete
+	if rep.Incomplete {
+		rep.Warnings = append(rep.Warnings, "geometry inspection incomplete: "+strings.Join(rep.Coverage.Limitations, "; ")+"; operation success or score convergence does not certify layout quality")
+	}
 	rep.OK = true
 	for _, s := range rep.Steps {
 		if s.RolledBack {
@@ -327,6 +336,9 @@ func refineSummary(rep *refineReport) string {
 	}
 	fmt.Fprintf(&b, "%.1f → %.1f over %d round(s), %d part(s) moved",
 		rep.ScoreBefore, rep.ScoreAfter, rep.Rounds, rep.MovedParts)
+	if rep.Incomplete {
+		b.WriteString("; geometry inspection incomplete")
+	}
 	if rep.Converged {
 		b.WriteString(", converged")
 	}

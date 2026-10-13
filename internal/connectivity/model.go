@@ -138,15 +138,17 @@ func Compare(a, b Document) Diff {
 }
 
 type Component struct {
-	ID        string     `json:"id"`
-	Ref       string     `json:"ref"`
-	Role      string     `json:"role,omitempty"`
-	Device    Device     `json:"device"`
-	Footprint string     `json:"footprint,omitempty"`
-	Pins      []Pin      `json:"pins"`
-	Placement *Placement `json:"placement,omitempty"`
-	PageID    string     `json:"pageId,omitempty"`
-	PageName  string     `json:"pageName,omitempty"`
+	ID           string         `json:"id"`
+	UniqueID     string         `json:"uniqueId,omitempty"`
+	Ref          string         `json:"ref"`
+	Role         string         `json:"role,omitempty"`
+	Device       Device         `json:"device"`
+	Footprint    string         `json:"footprint,omitempty"`
+	FootprintRef map[string]any `json:"footprintRef,omitempty"`
+	Pins         []Pin          `json:"pins"`
+	Placement    *Placement     `json:"placement,omitempty"`
+	PageID       string         `json:"pageId,omitempty"`
+	PageName     string         `json:"pageName,omitempty"`
 }
 type Placement struct {
 	// X/Y and orientation are part of the authored 1.4 placement plan. BBox is

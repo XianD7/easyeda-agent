@@ -137,14 +137,17 @@ type scoreDimension struct {
 
 // layoutScoreReport 是 `pcb layout-score` 的完整输出。
 type layoutScoreReport struct {
-	OK       bool    `json:"ok"`
-	Overall  float64 `json:"overall"` // 0-100 加权综合分（只算 scored/degraded 维）
-	Verdict  string  `json:"verdict"` // blocked | poor | fair | good | excellent
-	MinScore float64 `json:"minScore,omitempty"`
+	OK         bool                `json:"ok"`
+	Incomplete bool                `json:"incomplete"`
+	Coverage   pcbGeometryCoverage `json:"coverage"`
+	Overall    float64             `json:"overall"` // 0-100 加权综合分（只算 scored/degraded 维）
+	Verdict    string              `json:"verdict"` // blocked | incomplete | poor | fair | good | excellent
+	MinScore   float64             `json:"minScore,omitempty"`
 
 	// Blocking 是硬错：跨网短路 / 器件重叠 / 出板框。它们**不参与加权**，而是
 	// 独立成一票否决 —— 一块有短路的板不该因为其它八维都漂亮就拿 85 分。
-	Blocking []pcbCheckFinding `json:"blocking,omitempty"`
+	Blocking           []pcbCheckFinding `json:"blocking,omitempty"`
+	UnverifiedOverlaps []pcbLFinding     `json:"unverifiedOverlaps,omitempty"`
 
 	Dimensions []scoreDimension `json:"dimensions"`
 
@@ -301,6 +304,8 @@ type layoutScoreOpts struct {
 // 可直接喂金标准板 fixture。
 func analyzeLayoutScore(snap *boardSnapshot, s *spec.Spec, opts layoutScoreOpts) layoutScoreReport {
 	rep := layoutScoreReport{MinScore: opts.minScore}
+	rep.Coverage = snap.geometryCoverage(true)
+	rep.Incomplete = !rep.Coverage.Complete
 	if snap == nil {
 		rep.Summary = "no board snapshot"
 		rep.Verdict = "blocked"
@@ -308,6 +313,7 @@ func analyzeLayoutScore(snap *boardSnapshot, s *spec.Spec, opts layoutScoreOpts)
 	}
 	rep.ComponentCount = len(snap.Components)
 	rep.Partial = append(rep.Partial, snap.Partial...)
+	rep.Partial = append(rep.Partial, rep.Coverage.Limitations...)
 
 	rules := snap.Rules.toPcbRules()
 	minGap := opts.minGap
@@ -332,6 +338,7 @@ func analyzeLayoutScore(snap *boardSnapshot, s *spec.Spec, opts layoutScoreOpts)
 
 	// 硬错单列，不进加权。
 	rep.Blocking = blockingFindings(&layout)
+	rep.UnverifiedOverlaps = layout.UnverifiedOverlaps
 
 	for _, id := range dimensionOrder {
 		if len(opts.only) > 0 && !opts.only[id] {
@@ -431,9 +438,12 @@ func finalizeScoreReport(rep *layoutScoreReport) {
 		rep.Overall = math.Round(sumWS/sumW*10) / 10
 	}
 	rep.Verdict = verdictFor(rep)
-	rep.OK = len(rep.Blocking) == 0 && (rep.MinScore <= 0 || rep.Overall >= rep.MinScore)
+	rep.OK = !rep.Incomplete && len(rep.Blocking) == 0 && (rep.MinScore <= 0 || rep.Overall >= rep.MinScore)
 
 	var b strings.Builder
+	if rep.Incomplete {
+		b.WriteString("incomplete geometry inspection; ")
+	}
 	if len(rep.Blocking) > 0 {
 		fmt.Fprintf(&b, "%d blocking issue(s); ", len(rep.Blocking))
 	}
@@ -454,6 +464,9 @@ func finalizeScoreReport(rep *layoutScoreReport) {
 func verdictFor(rep *layoutScoreReport) string {
 	if len(rep.Blocking) > 0 {
 		return "blocked"
+	}
+	if rep.Incomplete {
+		return "incomplete"
 	}
 	if rep.ScoredDims == 0 {
 		return "unscored"

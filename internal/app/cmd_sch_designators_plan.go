@@ -18,10 +18,11 @@ import (
 // A designator repair is a same-instance operation. The original list envelope
 // remains the authority for everything except the reference and agent bindings.
 type schDesignatorBaseline struct {
-	Context actionContext
-	Result  map[string]any
-	Parts   map[string]map[string]any // primitive ID -> complete observed record
-	IDs     map[string]string         // primitive ID -> canonical component ID
+	Context                      actionContext
+	Result                       map[string]any
+	Parts                        map[string]map[string]any // primitive ID -> complete observed record
+	IDs                          map[string]string         // primitive ID -> canonical component ID
+	SourceConnectivityProvenance *schUnwiredConnectivityProvenance
 }
 
 func parseSchDesignatorBaseline(raw []byte, allowUnwired ...bool) (schDesignatorBaseline, error) {
@@ -149,7 +150,13 @@ func parseSchDesignatorBaseline(raw []byte, allowUnwired ...bool) (schDesignator
 	if len(out.Parts) == 0 {
 		return out, fmt.Errorf("no placed parts in baseline")
 	}
-	if _, err := connectivity.FromRead(out.Result); err != nil {
+	if verifiedUnwired {
+		_, provenance, err := schComposeKnownUnconnectedConnectivity(raw, out.Result)
+		if err != nil {
+			return out, err
+		}
+		out.SourceConnectivityProvenance = provenance
+	} else if _, err := connectivity.FromRead(out.Result); err != nil {
 		return out, err
 	}
 	return out, nil

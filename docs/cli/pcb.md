@@ -56,10 +56,10 @@
 
 | 能力 | 命令 | 说明 |
 |---|---|---|
-| 铺铜 | `pcb pour` / `pour-fit` / `pour-rebuild` | 规则感知内缩;`pour-fit --replace` 默认清跨层同网 pour(顶/底要显式关) |
+| 铺铜 | `pcb pour` / `pour-fit` / `pour-rebuild` | 规则感知内缩；显式 priority 是原生每层插入顺序，0 最高、只接受 0..已有数量，验证同层顺移；SDK getter 仅诊断。`pour-fit --replace` 默认清跨层同网 pour(顶/底要显式关) |
 | 4 层电源树 | `pcb power-planes` | GND+电源各占专用内平面+每焊盘过孔缝合;GND 内层翻成真 PLANE 的验证配方 |
-| 缝合/填充 | `pcb via-stitch` / `pcb fill` | 接地缝合过孔阵 / 实心填充 |
-| 禁布区 | `pcb region` / `pcb antenna-keepout` / `lib footprint region` | 板级禁铺/禁走线区；天线 keepout 按块库声明全层生成；封装副本可写 region 并保存回读，实例绑定仍须现场核对 |
+| 缝合/填充 | `pcb via-stitch` / `pcb fill` | 接地缝合过孔阵 / 静态填充；fill 创建核对 fresh ID、网、层、模式、锁定和请求几何，未验证结果保留 ID 并停止 Apply |
+| 禁布区 | `pcb region` / `pcb antenna-keepout` / `lib footprint region` | 板级禁铺/禁走线区；天线创建要求完整规则/层/polygon回读，失败非零并保留实际PID；[证明与例外](../../.agents/skills/easyeda-agent/references/pcb.md#天线禁铜区域)；封装副本可写 region 并保存回读，实例绑定仍须现场核对 |
 | 挖槽 | `pcb slot` | 板内挖空(MULTI 层) |
 
 ### 5. 丝印与标注

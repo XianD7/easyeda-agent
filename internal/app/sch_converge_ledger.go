@@ -44,7 +44,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -366,21 +365,4 @@ func schPageIdentityOf(cfg *appConfig, res *actionResult) schPageIdentity {
 	}
 	id.Project = id.UUID
 	return id
-}
-
-// schConvergeRecords 返回排好序的账页(诊断/测试用,同输入同输出)。
-func (l *schConvergeLedger) records() []*schConvergeRecord {
-	if l == nil {
-		return nil
-	}
-	keys := make([]string, 0, len(l.Records))
-	for k := range l.Records {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]*schConvergeRecord, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, l.Records[k])
-	}
-	return out
 }

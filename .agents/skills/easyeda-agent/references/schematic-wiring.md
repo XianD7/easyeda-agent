@@ -19,6 +19,12 @@ schematic.md 的 typed 写入校验。
 readbackAttempts/observations 及可用的原始审计；
 调用方保存当前已知状态、fresh 回读后从参数源重新生成受保护计划，不能盲重放失败队列。
 
+`sch wire` 的成功也不能保证删除后用相同参数再次创建成功。Web 4.1.60 / 本地
+`1.9.1-dev.4` 的单动作测试中，首次引脚导线创建和精确删除都通过，随后相同参数的
+创建返回宿主 `create failed!`、CLI 非零退出；完整回读、保存重载后连接库存为空。
+根因仍未知，不据此增加写入重试或归因缓存。冻结输入和错误，停止依赖该导线的步骤；
+新空页的首次创建成功只证明那个独立用例，不修复或补签原页的失败。
+
 `connect_pin` (`sch connect`) keeps the connection **safe** (pin → short wire →
 flag/netport, never a netflag on a bare pin), but it still makes YOU pick
 `--direction` and `--offset`, so layout quality depends on judgment. **`sch

@@ -420,7 +420,11 @@ test('host normalization is evidence of an incomplete roundtrip, never silently 
 });
 
 test('post-write transition does not read source from the newly active document', async () => {
-	const host = installHost({ context: read => read >= 4 ? { documentUuid: 'document-2' } : {} });
+	let written = false;
+	const host = installHost({
+		context: () => written ? { documentUuid: 'document-2' } : {},
+		set: async () => { written = true; return true; },
+	});
 	try {
 		const response = await runAction('document.source.roundtrip', { ...target, snapshot: snapshot() });
 		const result = response.result!;
@@ -430,6 +434,8 @@ test('post-write transition does not read source from the newly active document'
 		assert.equal(host.sourceReads(), 1);
 		assert.deepEqual(host.writes, [source]);
 		assert.deepEqual(response.context, {}, 'dispatcher must not add a fallback identity read after the transition');
+		assert.equal(response.mutationContextAvailable, false);
+		assert.equal(response.mutationContext?.documentUuid, target.documentUuid);
 	} finally { host.restore(); }
 });
 
