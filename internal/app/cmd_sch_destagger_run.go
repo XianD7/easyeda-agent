@@ -75,27 +75,6 @@ func (before destaggerElectrical) regressions(after destaggerElectrical) []strin
 	return out
 }
 
-// diff 列出两份电气快照**任何方向**的差异。regressions 只管"变差"(落地判据),
-// 复原判据更严:回滚后必须与动手前**一模一样**,变好了同样说明页面被改动过。
-func (before destaggerElectrical) diff(after destaggerElectrical) []string {
-	var out []string
-	cmp := func(name string, b, a int) {
-		if a != b {
-			out = append(out, fmt.Sprintf("%s %d→%d", name, b, a))
-		}
-	}
-	cmp("floatingPins", before.FloatingPins, after.FloatingPins)
-	cmp("geomNetMismatches", before.GeomNetMismatches, after.GeomNetMismatches)
-	cmp("netMarkerMismatches", before.NetMarkerMismatches, after.NetMarkerMismatches)
-	cmp("multiNetWires", before.MultiNetWires, after.MultiNetWires)
-	cmp("wireCrossings", before.WireCrossings, after.WireCrossings)
-	cmp("wireOverPins", before.WireOverPins, after.WireOverPins)
-	cmp("zeroLengthWires", before.ZeroLengthWires, after.ZeroLengthWires)
-	cmp("danglingWires", before.DanglingWires, after.DanglingWires)
-	cmp("markerOverlaps", before.MarkerOverlaps, after.MarkerOverlaps)
-	return out
-}
-
 // fetchDestaggerElectrical 跑一次连接器 schematic.check 取电气快照,并补上
 // Go 侧的 marker-overlap 计数(几何项连接器看不见)。
 func fetchDestaggerElectrical(cfg *appConfig, window string, comps []layoutComp, eps float64) (destaggerElectrical, error) {

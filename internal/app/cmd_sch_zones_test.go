@@ -4,19 +4,6 @@ import (
 	"testing"
 )
 
-func schZoneComps() []layoutComp {
-	box := func(cx, cy float64) *layoutBBox {
-		return &layoutBBox{MinX: cx - 20, MinY: cy - 10, MaxX: cx + 20, MaxY: cy + 10}
-	}
-	// Sheet 0..900 × 0..600 (y-UP canvas: top rows are y > 300).
-	return []layoutComp{
-		{Designator: "U1", ComponentType: "part", BBox: box(450, 300)}, // center
-		{Designator: "U3", ComponentType: "part", BBox: box(100, 500)}, // left-top (large y = visually up)
-		{Designator: "C5", ComponentType: "part", BBox: box(800, 100)}, // right-bottom — NOT left-top
-		{Designator: "J1", ComponentType: "part", BBox: nil},           // no bbox → skipped
-	}
-}
-
 // TestFindSchZoneViolations: only claimed parts outside their zone rect are
 // flagged; absent/bbox-less designators are skipped, order is deterministic.
 

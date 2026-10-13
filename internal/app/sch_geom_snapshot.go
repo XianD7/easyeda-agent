@@ -23,15 +23,13 @@ package app
 // 同时含 includeWires/includeConnectivitySummary 的快照,不能把两次读取拼成
 // 无接点交叉的证据。参数已请求不代表返回证据完整;具体 stage 仍须校验实际库存。
 
-import "fmt"
-
 // schGeomSnapshot 是一次只读流程内的 components.list 快照。
 // **nil 是合法值**,表示「没有预读,自己去拿」—— 单命令路径就走这条。
 type schGeomSnapshot struct {
 	comps []layoutComp
 	res   *actionResult
 	err   error
-	// flags 记录这份快照是用什么参数读的,便于 compsOr 判定它能不能服务某次请求。
+	// flags 记录这份快照是用什么参数读的,便于 covers 判定它能不能服务某次请求。
 	withPins                bool
 	withWires               bool
 	withConnectivitySummary bool
@@ -83,23 +81,7 @@ func (s *schGeomSnapshot) covers(payload map[string]any) bool {
 	return wantAll == s.allPages
 }
 
-// compsOr 返回快照里的器件;快照不适用(nil / 读失败 / 参数不够)就现读一次。
-func (s *schGeomSnapshot) compsOr(cfg *appConfig, window string, payload map[string]any) ([]layoutComp, error) {
-	if s.covers(payload) {
-		return s.comps, nil
-	}
-	res, err := requestAction(cfg, "schematic.components.list", window, payload)
-	if err != nil {
-		return nil, err
-	}
-	comps, perr := parseLayoutComps(res.Result)
-	if perr != nil {
-		return nil, fmt.Errorf("parse components: %w", perr)
-	}
-	return comps, nil
-}
-
-// resultOr 同 compsOr,但返回原始 actionResult(有些判据要读 result 里的别的字段)。
+// resultOr 在快照覆盖本次请求时复用它,否则重新读取;返回原始 actionResult(有些判据要读 result 里的别的字段)。
 func (s *schGeomSnapshot) resultOr(cfg *appConfig, window string, payload map[string]any) (*actionResult, error) {
 	if s.covers(payload) && s.res != nil {
 		return s.res, nil

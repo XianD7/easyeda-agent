@@ -302,13 +302,3 @@ func benchBlockingDelta(before, after layoutScoreReport) []string {
 	}
 	return out
 }
-
-func countBlockingType(rep layoutScoreReport, typ string) int {
-	n := 0
-	for _, f := range rep.Blocking {
-		if f.Type == typ {
-			n++
-		}
-	}
-	return n
-}

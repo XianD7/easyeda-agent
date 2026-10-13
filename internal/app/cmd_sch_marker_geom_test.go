@@ -5,17 +5,6 @@ import (
 	"testing"
 )
 
-// findingByType returns the findings of a given type, in order.
-func findingsOfType(fs []checkFinding, typ string) []checkFinding {
-	var out []checkFinding
-	for _, f := range fs {
-		if f.Type == typ {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 func TestShortSymbolIsConnectivityMarker(t *testing.T) {
 	if !isSchMarker("short_symbol") {
 		t.Fatal("short_symbol must participate in marker/title-block geometry checks")

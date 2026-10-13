@@ -1071,102 +1071,6 @@ func normalizeMaterializedPourMap(boundary, materialized map[string]any) (map[st
 	return materialized, nil
 }
 
-func materializedFillBBox(fills []any) (layoutBBox, error) {
-	box := layoutBBox{MinX: math.Inf(1), MinY: math.Inf(1), MaxX: math.Inf(-1), MaxY: math.Inf(-1)}
-	points := 0
-	for i, raw := range fills {
-		fill, ok := raw.(map[string]any)
-		if !ok {
-			return layoutBBox{}, fmt.Errorf("fill %d is not an object", i)
-		}
-		paths, err := materializedPathPolylines(fill["source"])
-		if err != nil {
-			return layoutBBox{}, fmt.Errorf("fill %d path: %w", i, err)
-		}
-		for _, path := range paths {
-			for _, point := range path {
-				box.MinX, box.MinY = math.Min(box.MinX, point[0]), math.Min(box.MinY, point[1])
-				box.MaxX, box.MaxY = math.Max(box.MaxX, point[0]), math.Max(box.MaxY, point[1])
-				points++
-			}
-		}
-	}
-	if points < 2 {
-		return layoutBBox{}, fmt.Errorf("materialized fills contain fewer than two points")
-	}
-	return box, nil
-}
-
-func scaleMaterializedPathSource(raw any, scale float64) (any, error) {
-	items, ok := raw.([]any)
-	if !ok || len(items) == 0 {
-		return nil, fmt.Errorf("path source is not an array")
-	}
-	if _, nested := items[0].([]any); nested {
-		out := make([]any, 0, len(items))
-		for _, item := range items {
-			scaled, err := scaleMaterializedPathSource(item, scale)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, scaled)
-		}
-		return out, nil
-	}
-	if len(items) < 5 {
-		return nil, fmt.Errorf("path source is too short")
-	}
-	x, xok := asFloatOK(items[0])
-	y, yok := asFloatOK(items[1])
-	if !xok || !yok {
-		return nil, fmt.Errorf("path start is invalid")
-	}
-	out := []any{x * scale, y * scale}
-	for i := 2; i < len(items); {
-		command, ok := items[i].(string)
-		if !ok {
-			return nil, fmt.Errorf("path command token is invalid at index %d", i)
-		}
-		out = append(out, command)
-		i++
-		switch command {
-		case "L":
-			consumed := 0
-			for i+1 < len(items) {
-				if _, next := items[i].(string); next {
-					break
-				}
-				x, xok = asFloatOK(items[i])
-				y, yok = asFloatOK(items[i+1])
-				if !xok || !yok {
-					return nil, fmt.Errorf("line coordinate is invalid")
-				}
-				out = append(out, x*scale, y*scale)
-				i += 2
-				consumed++
-			}
-			if consumed == 0 {
-				return nil, fmt.Errorf("L command has no coordinate pair")
-			}
-		case "ARC":
-			if i+2 >= len(items) {
-				return nil, fmt.Errorf("ARC command is incomplete")
-			}
-			sweep, sok := asFloatOK(items[i])
-			x, xok = asFloatOK(items[i+1])
-			y, yok = asFloatOK(items[i+2])
-			if !sok || !xok || !yok {
-				return nil, fmt.Errorf("ARC command has invalid numeric fields")
-			}
-			out = append(out, sweep, x*scale, y*scale)
-			i += 3
-		default:
-			return nil, fmt.Errorf("path command %q is unsupported", command)
-		}
-	}
-	return out, nil
-}
-
 func materializedPathPolylines(raw any) ([][][2]float64, error) {
 	items, ok := raw.([]any)
 	if !ok || len(items) == 0 {
@@ -2431,46 +2335,6 @@ func strokeIntersectsSimplePolygon(stroke pcbTrack, polygon [][2]float64) bool {
 	return false
 }
 
-func compoundPolygonIntersectsSimplePolygon(raw any, polygon [][2]float64) (bool, error) {
-	contours, err := polygonSourceContours(raw)
-	if err != nil {
-		return false, err
-	}
-	topology, err := buildCompoundPolygonTopology(contours)
-	if err != nil {
-		return false, err
-	}
-	regionTopology, err := buildCompoundPolygonTopology([][][2]float64{polygon})
-	if err != nil {
-		return false, fmt.Errorf("no-pours contour is invalid: %w", err)
-	}
-	_ = regionTopology
-	for _, contour := range contours {
-		for i, a := range contour {
-			b := contour[(i+1)%len(contour)]
-			for j, c := range polygon {
-				d := polygon[(j+1)%len(polygon)]
-				if segSegDist(a[0], a[1], b[0], b[1], c[0], c[1], d[0], d[1]) <= netPathGeomEps {
-					return true, nil
-				}
-			}
-		}
-	}
-	for _, point := range polygon {
-		if topology.componentAt(point) >= 0 {
-			return true, nil
-		}
-	}
-	for _, contour := range contours {
-		for _, point := range contour {
-			if pointInOrOnSimplePolygon(polygon, point) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
-}
-
 func sameTrackGeometry(a, b pcbTrack) bool {
 	return a.Net == b.Net && a.Layer == b.Layer && math.Abs(a.Width-b.Width) <= netPathGeomEps && sameSegment(a.X1, a.Y1, a.X2, a.Y2, b.X1, b.Y1, b.X2, b.Y2)
 }
@@ -3146,21 +3010,6 @@ func polygonSignedArea(points [][2]float64) float64 {
 		area += p[0]*q[1] - q[0]*p[1]
 	}
 	return area / 2
-}
-
-func containsStrings(raw any, want []string) bool {
-	set := map[string]bool{}
-	if a, ok := raw.([]any); ok {
-		for _, v := range a {
-			set[asString(v)] = true
-		}
-	}
-	for _, v := range want {
-		if !set[v] {
-			return false
-		}
-	}
-	return true
 }
 
 func pointsBBox(points [][2]float64) layoutBBox {

@@ -151,18 +151,3 @@ func onSchematicGrid(v float64) bool {
 	const grid = 5.0
 	return math.Abs(v-math.Round(v/grid)*grid) <= 1e-6
 }
-
-func findNet(d connectivity.Document, id string) *connectivity.Net {
-	for i := range d.Nets {
-		if d.Nets[i].ID == id {
-			return &d.Nets[i]
-		}
-	}
-	return nil
-}
-func findNetName(d connectivity.Document, id string) string {
-	if n := findNet(d, id); n != nil {
-		return n.Name
-	}
-	return id
-}

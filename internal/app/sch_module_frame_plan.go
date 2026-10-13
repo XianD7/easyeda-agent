@@ -20,10 +20,6 @@ func planSchModuleFrame(id, title string, content, sheet layoutBBox) (schFrameSp
 	return measureSchModuleFrameObstacles(id, title, []layoutBBox{content}, nil, &sheet)
 }
 
-func measureSchModuleFrame(id, title string, content layoutBBox) (schFrameSpec, error) {
-	return measureSchModuleFrameObstacles(id, title, []layoutBBox{content}, nil, nil)
-}
-
 // A conservative fallback for the current plain sans-serif font, not a native
 // measurement. Narrow Latin glyphs need less space than a CJK/full-em glyph.
 // Apply must verify the rendered bbox against this envelope and the obstacles.

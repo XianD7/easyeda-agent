@@ -34,20 +34,6 @@ import (
 // 而每翻一次都要删桩重连(有串网风险),不值得。
 const zoneCompactAspectTrigger = 2.0
 
-// zoneCompactPlan 是一个区的收敛计划。
-type zoneCompactPlan struct {
-	Zone string `json:"zone"`
-	// BeforeW/H 与 AfterW/H 是收敛前后的**预估** bbox(只算器件本体 + 排布跨度,
-	// 不含 marker —— marker 的实际伸展要落地后重测)。
-	BeforeW float64          `json:"beforeW"`
-	BeforeH float64          `json:"beforeH"`
-	AfterW  float64          `json:"afterW"`
-	AfterH  float64          `json:"afterH"`
-	Aspect  float64          `json:"aspectBefore"`
-	Moves   []tidySignalPlan `json:"-"`
-	Reason  string           `json:"reason"`
-}
-
 // planSignalColumn 把 signal-row 件**竖向堆叠**在锚件的一侧。
 //
 // 与 planSignalRow 的分工:那个只管「netport 一律水平」(铁则4,竖放会折叠长条标),
@@ -144,40 +130,6 @@ func estimateColumnBBox(anchorW, anchorH, colItemW, spacing float64, n int) (w, 
 		h = colH + colItemW
 	}
 	return w, h
-}
-
-// tidyPatternSignalColumn 是 `group tidy --pattern` 的新档:signal-row 件竖排。
-const tidyPatternSignalColumn = "signal-column"
-
-// tidySignalStaged 是收集阶段的暂存:件的 live 状态、规划输入、以及要竖直化的
-// 电源/地旗。分两遍是因为**列内 Y 分布要知道全部成员**才算得出来。
-type tidySignalStaged struct {
-	Live  tidyLiveMember
-	In    tidySignalMemberIn
-	Rails []tidyRailPin
-}
-
-// tidyColumnSide 选把列排在锚件的哪一侧:**跟随这些件当前的重心**。
-//
-// 不选「页面空间大的那侧」是有意的:那要把纸面尺寸传进这个纯函数,而且会让同一
-// 组在不同页得出不同结果;跟随重心则是就近收拢 —— 件原本在锚件左边就排左边,
-// 视觉跳变最小,跨区连线也不会平白绕到另一侧。
-func tidyColumnSide(ins []tidySignalMemberIn, anchor tidyAnchor) float64 {
-	if len(ins) == 0 {
-		return -1
-	}
-	var sum float64
-	var n int
-	for _, in := range ins {
-		if in.CenterX != 0 {
-			sum += in.CenterX
-			n++
-		}
-	}
-	if n == 0 || sum/float64(n) <= anchor.X {
-		return -1
-	}
-	return 1
 }
 
 // ── 接线状态:**已被 zone-arrange 取代**(2026-08-16 晚)──────────────────────

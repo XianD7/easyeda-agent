@@ -337,17 +337,9 @@ func snapPartBox(p alPart, candidate layoutBBox) layoutBBox {
 	}
 }
 
-// findSlot searches for the first collision-free center for box, starting at
-// (cx,cy) then spiralling outward. Each predicate (nil = skip) vetoes a
-// candidate; the first survivor wins. Returns the placed box, the retry index
-// (0 = landed at the preferred center), and whether a slot was found.
-func findSlot(box layoutBBox, cx, cy, step float64, preferVertical bool, collides, inBounds, hitsTitle, hitsLane func(layoutBBox) bool) (layoutBBox, int, bool) {
-	return findSlotNormalized(box, cx, cy, step, preferVertical, nil, collides, inBounds, hitsTitle, hitsLane)
-}
-
-// findSlotNormalized is findSlot with an optional geometry normalizer applied
-// before every predicate. Template autolayout uses it to validate the snapped
-// anchor geometry; other callers that do not snap can keep using findSlot.
+// findSlotNormalized is the spiral free-slot search, with an optional geometry
+// normalizer applied before every predicate. Template autolayout uses it to
+// validate the snapped anchor geometry; callers that do not snap pass nil.
 func findSlotNormalized(box layoutBBox, cx, cy, step float64, preferVertical bool, normalize func(layoutBBox) layoutBBox, collides, inBounds, hitsTitle, hitsLane func(layoutBBox) bool) (layoutBBox, int, bool) {
 	tryAt := func(tx, ty float64) (layoutBBox, bool) {
 		cand := recenterBox(box, tx, ty)

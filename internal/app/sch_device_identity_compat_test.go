@@ -282,16 +282,6 @@ func identityCompatEnvelope(result any, doc string) string {
 	b, _ := json.Marshal(map[string]any{"ok": true, "id": "probe-test", "result": result, "context": map[string]any{"projectUuid": "project", "documentUuid": doc, "documentType": "schematic"}})
 	return string(b)
 }
-func identityCompatProof(hit schematicIdentityCandidate) schematicIdentityProbe {
-	var proof schematicIdentityProbe
-	proof.SchemaVersion = 1
-	proof.Query.LCSCIDs = []string{"C6186"}
-	proof.Query.AllowMultiMatch = true
-	proof.Query.Searches = []schematicIdentitySearch{{Query: "AMS1117-3.3", LibraryUUID: "system"}}
-	proof.Candidates = []schematicIdentityCandidate{hit}
-	proof.NativeFootprints = []schematicNativeFootprint{identityCompatNativeFootprint()}
-	return proof
-}
 
 func TestSchematicIdentityCompatSharedDispatchAndApplyRead(t *testing.T) {
 	original := typedIdentityFixture(false)

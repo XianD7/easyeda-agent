@@ -1194,14 +1194,6 @@ func tidyGuardDisconnect(designator, pin string, result map[string]any) error {
 		designator, pin, strings.Join(collateral, ","))
 }
 
-func tidyPinNumbers(targets []tidyPinTarget) []string {
-	out := make([]string, len(targets))
-	for i, t := range targets {
-		out[i] = t.Pin
-	}
-	return out
-}
-
 // tidySelfCheck 收尾自检(铁则5):layout-lint 0 overlap + bridge-check 0
 // bridge。检查本身跑不了也算红(没有证明 = 不算过,fail-closed)。
 func tidySelfCheck(cfg *appConfig, win, docUUID string) error {

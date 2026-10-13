@@ -656,12 +656,6 @@ func (s *boardSnapshot) silkByComponent() map[string][]pcbSilkText {
 	return m
 }
 
-// hasOutlinePolygon 报告板框是否为真实多边形（而非退化 AABB）。异形板上任何
-// 「到板边」类判据都必须先问这一句，答案是 false 时要在 finding 里降级说明。
-func (s *boardSnapshot) hasOutlinePolygon() bool {
-	return s.Outline != nil && len(s.Outline.Points) >= 3
-}
-
 // note 追加一条降级说明（去重）。
 func (s *boardSnapshot) note(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
@@ -1068,28 +1062,6 @@ func boardSnapshotSemanticSHA256(s *boardSnapshot) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
-}
-
-// fetchCopperLayerCount 读铜层数（射频 keepout 等叠层相关维度用）。
-//
-// 用连接器算好的 copperLayerCount，**不要**自己数 type=="SIGNAL"|"PLANE"。
-// 真机验出来的坑：`pcb.layers.list` 返回 260 层，其中 SIGNAL/PLANE 有 34 个 ——
-// EasyEDA 把 Inner1..Inner30 全部预置在层表里，未启用的靠 `layerStatus == 0`
-// 区分。按 type 数会把一块 4 层板报成 34 层（ceshi 实测），而 antenna-keepout
-// 的判据正是 `copperLayers > 2 时还要求内层覆盖` —— 数错就会对着不存在的内层
-// 要求 keepout。
-//
-// pcb_check.go:2019 的 fetchAntennaContext 早就是这么读的，这里保持同一判据，
-// 不引入第二套铜层口径。
-func fetchCopperLayerCount(cfg *appConfig, window string) (int, error) {
-	res, err := requestAction(cfg, "pcb.layers.list", window, nil)
-	if err != nil {
-		return 0, err
-	}
-	if n, ok := asFloatOK(mnav(res.Result, "copperLayerCount")); ok && n > 0 {
-		return int(n), nil
-	}
-	return 0, fmt.Errorf("connector reported no copperLayerCount")
 }
 
 // loadBoardSnapshotFile 从磁盘读回一份快照（金标准回归 / --from 离线打分）。

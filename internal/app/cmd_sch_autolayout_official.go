@@ -761,27 +761,6 @@ func countNets(liveNets map[string]map[string]bool) int {
 	return n
 }
 
-// fetchSchPartDesignators returns the ACTIVE page's real part designators
-// (best-effort; a read failure yields nil → the bare autoLayout call).
-func fetchSchPartDesignators(cfg *appConfig, win string) []string {
-	res, err := requestAction(cfg, "schematic.components.list", win, nil)
-	if err != nil {
-		return nil
-	}
-	comps, err := parseLayoutComps(res.Result)
-	if err != nil {
-		return nil
-	}
-	kept, _ := filterLayoutComps(comps, false)
-	var out []string
-	for _, c := range kept {
-		if c.Designator != "" {
-			out = append(out, c.Designator)
-		}
-	}
-	return out
-}
-
 // deviceTypeForDesignator maps a reference-designator prefix to the device-type
 // bucket the platform autoLayout(designatorDeviceTypeMap) understands (issue
 // #143). The valid buckets are resistor/capacitor/inductive/diode/triode/

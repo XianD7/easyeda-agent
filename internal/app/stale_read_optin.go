@@ -8,7 +8,6 @@ package app
 import (
 	"errors"
 	"fmt"
-	"time"
 )
 
 // staleReadCode remains understood so a current CLI can explain a response
@@ -52,8 +51,4 @@ func staleReadForceReason(_ *appConfig, _ string, _ any) string { return "" }
 
 func requestReadAfterWrite(cfg *appConfig, action, window string, payload any, _ string) (*actionResult, error) {
 	return requestAction(cfg, action, window, payload)
-}
-
-func requestReadAfterWriteTimed(cfg *appConfig, action, window string, payload any, _ string, timeout time.Duration) (*actionResult, error) {
-	return requestActionTimed(cfg, action, window, payload, timeout)
 }

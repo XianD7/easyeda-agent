@@ -56,13 +56,6 @@ func planSchModuleRows(frames []schFrameSpec, sheet layoutBBox, margin, gap floa
 	return out, nil
 }
 
-// A paperless composition uses a derived validation envelope only. Its width
-// comes from complete module frames, so this does not impose a paper limit
-// or silently turn the drawing back into an A-size sheet.
-func schCompositionContentDerivedBounds(frames []schFrameSpec) layoutBBox {
-	return schCompositionContentDerivedBoundsRows(frames, nil)
-}
-
 // A break gives the index of the first module in the next row. The caller
 // chooses the reading order; this function never rotates or resizes a module.
 func validateSchPaperlessRowBreaks(breaks []int, count int) error {
