@@ -233,7 +233,7 @@ func (s *schConvergeStop) message() string {
 	if advice != "" {
 		b.WriteString("\n下一步:" + advice)
 	} else {
-		b.WriteString("\n下一步二选一:① 让这个目标独占一页(`easyeda sch page-new --name <页名>` 后在新页重放);" +
+		b.WriteString("\n下一步二选一:① 让这个目标独占一页(`easyeda sch page-new --schematic <原理图UUID>` 后在新页重放);" +
 			"② 继续分页 —— 把本页其余模块搬走腾出整幅。")
 	}
 	b.WriteString("\n(确认还要再试一次:加 `--max-attempts 0` 关闭上限;或先做出实质改变——" +

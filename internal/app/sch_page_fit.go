@@ -211,15 +211,17 @@ func schPageFitAdvice(f schPageFit) string {
 				"走图签左侧要宽 ≤ %.0f(本体 %.0f,差 %.0f)—— 两条都不满足",
 				f.AboveH, f.H, needAbove, f.LeftW, f.W, needLeft)
 		}
+		// The group box is the extent of its members' CURRENT positions, so
+		// spread-out satellites inflate it exactly like a big body does (live
+		// 2026-10-13: a WROOM-1 block read 829×827 because its five passives
+		// had been thrown sideways; packed, the same block fits a quarter page).
 		return fmt.Sprintf("%s %s %.0f×%.0f —— %s。"+
-			"**这不是摆放问题:再挪、再压 `--per-row`、再调 margin/gutter 都不会让它变小。**"+
-			"三条出路(A4-only,不换纸):"+
-			"① 让它独占一页 —— `easyeda sch page-new --name <页名>` 后在新页 `block-apply`;"+
-			"② 继续分页 —— 把本页其余模块搬到新页,腾出整幅给它;"+
-			"③ 把组收小 —— `easyeda sch clusters` 看「组高 vs 本体高」,"+
-			"被自己 marker 撑大的脚用 `sch disconnect --pin X:n` + "+
-			"`sch connect --pin X:n --direction left|right` 改标签朝向"+
-			"(竖排标签能把组撑高数倍:实测本体 21 高的电容,组高 134,改横向后 58)。",
+			"整组再挪、再压 `--per-row`、再调 margin/gutter 都只改位置,不会让组框变小,别重试同一条命令。"+
+			"先分清是哪一种:`easyeda sch clusters` 看组内各件是否贴着锚件 —— "+
+			"若外围摊开撑大了组框,这是摆放问题:重新落块或 `easyeda sch zone-arrange --apply` 收拢;"+
+			"若各件已贴紧而本体与标签本身就超出(A4-only,不换纸):"+
+			"① 让它独占一页 —— `easyeda sch page-new --schematic <原理图UUID>` 后在新页 `block-apply`;"+
+			"② 继续分页 —— 把本页其余模块搬到新页,腾出整幅给它。",
 			who, gauge, f.W, f.H, short)
 	}
 	return ""
