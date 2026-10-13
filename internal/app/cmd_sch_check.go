@@ -321,7 +321,7 @@ func renderCheckReport(rep checkReport, w io.Writer) {
 		fmt.Fprintln(w, "→ net names: fix mismatched flags/ports/labels before treating schematic DRC as clean")
 	}
 	if s.ZeroLengthWires > 0 || s.DanglingWires > 0 {
-		fmt.Fprintln(w, "→ stray wires: delete the zero-length/dangling segments (sch prim-delete <wirePrimitiveId>)")
+		fmt.Fprintln(w, "→ stray wires: delete the zero-length/dangling segments (sch prim-delete --ids <wirePrimitiveId>)")
 	}
 	if s.DuplicateNetMarkers > 0 {
 		fmt.Fprintln(w, "→ duplicate markers: a partial autoconnect stacked coincident flags/ports — sch prim-delete the suggested IDs (keep one)")

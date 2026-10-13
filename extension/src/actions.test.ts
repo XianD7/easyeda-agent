@@ -4541,3 +4541,15 @@ test('pcb.image.delete verifies fresh absence; missing inventory cannot prove de
 	res=await runAction('pcb.image.delete',{primitiveId:'reference-1'});
 	assert.equal(res.result.verified,false);assert.equal(res.result.partial,true);
 });
+
+test('pcb layout ops refuse without primitiveIds and never read the canvas selection', async () => {
+	let selectionReads = 0;
+	(globalThis as any).eda = { pcb_SelectControl: { getAllSelectedPrimitives_PrimitiveId: async () => { selectionReads++; return ['user-picked']; } } };
+	try {
+		for (const [action, payload] of [['pcb.components.move', { dx: 10, dy: 0 }], ['pcb.align', { mode: 'left' }], ['pcb.distribute', { axis: 'x' }], ['pcb.grid_snap', { grid: 50 }], ['pcb.components.arrange', {}]] as const) {
+			await assert.rejects(runAction(action, payload as any), (err: any) => err.code === 'MISSING_PAYLOAD_FIELD' && /primitiveIds/.test(err.message), action);
+		}
+		assert.equal(selectionReads, 0, 'the user selection must never become a layout target');
+	}
+	finally { delete (globalThis as any).eda; }
+});

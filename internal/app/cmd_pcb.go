@@ -1188,7 +1188,7 @@ behavior (faster, but re-check with '--dry-run' after a reload yourself).`,
 	}
 
 	// ── align / distribute / grid-snap / move / arrange ───────────────────
-	// All operate on the current selection unless --ids is given.
+	// All require explicit --ids; none falls back to the canvas selection.
 	addLayoutOp := func(use, short, action, flagName, flagDesc string, withValue bool) {
 		var idsJSON, val string
 		c := &cobra.Command{
@@ -1203,20 +1203,21 @@ behavior (faster, but re-check with '--dry-run' after a reload yourself).`,
 					}
 					payload[flagName] = val
 				}
-				if idsJSON != "" {
-					ids, err := parseIDList(idsJSON)
-					if err != nil {
-						return err
-					}
-					payload["primitiveIds"] = ids
+				if idsJSON == "" {
+					return fmt.Errorf("--ids is required (layout ops never act on the canvas selection)")
 				}
+				ids, err := parseIDList(idsJSON)
+				if err != nil {
+					return err
+				}
+				payload["primitiveIds"] = ids
 				return dispatch(cfg, action, window, payload, stdout, stderr)
 			},
 		}
 		if withValue {
 			c.Flags().StringVar(&val, flagName, "", flagDesc)
 		}
-		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (omit = current selection)")
+		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (required; never the canvas selection)")
 		pcb.AddCommand(c)
 	}
 	addLayoutOp("align", "Align components by edge/center (left|right|top|bottom|centerX|centerY)",
@@ -1240,18 +1241,19 @@ behavior (faster, but re-check with '--dry-run' after a reload yourself).`,
 					return fmt.Errorf("--grid is required")
 				}
 				payload := map[string]any{"grid": grid}
-				if idsJSON != "" {
-					ids, err := parseIDList(idsJSON)
-					if err != nil {
-						return err
-					}
-					payload["primitiveIds"] = ids
+				if idsJSON == "" {
+					return fmt.Errorf("--ids is required (layout ops never act on the canvas selection)")
 				}
+				ids, err := parseIDList(idsJSON)
+				if err != nil {
+					return err
+				}
+				payload["primitiveIds"] = ids
 				return dispatch(cfg, "pcb.grid_snap", window, payload, stdout, stderr)
 			},
 		}
 		c.Flags().Float64Var(&grid, "grid", 0, "grid step in PCB data units (required)")
-		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (omit = current selection)")
+		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (required; never the canvas selection)")
 		pcb.AddCommand(c)
 	}
 	{
@@ -1268,19 +1270,20 @@ behavior (faster, but re-check with '--dry-run' after a reload yourself).`,
 					return fmt.Errorf("at least one of --dx / --dy is required")
 				}
 				payload := map[string]any{"dx": dx, "dy": dy}
-				if idsJSON != "" {
-					ids, err := parseIDList(idsJSON)
-					if err != nil {
-						return err
-					}
-					payload["primitiveIds"] = ids
+				if idsJSON == "" {
+					return fmt.Errorf("--ids is required (layout ops never act on the canvas selection)")
 				}
+				ids, err := parseIDList(idsJSON)
+				if err != nil {
+					return err
+				}
+				payload["primitiveIds"] = ids
 				return dispatch(cfg, "pcb.components.move", window, payload, stdout, stderr)
 			},
 		}
 		c.Flags().Float64Var(&dx, "dx", 0, "X offset")
 		c.Flags().Float64Var(&dy, "dy", 0, "Y offset")
-		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (omit = current selection)")
+		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (required; never the canvas selection)")
 		pcb.AddCommand(c)
 	}
 	{
@@ -1312,13 +1315,14 @@ the placement priorities in pcb-layout-conventions.md (easyeda-agent) afterward.
 				if cmd.Flags().Changed("cols") {
 					payload["cols"] = cols
 				}
-				if idsJSON != "" {
-					ids, err := parseIDList(idsJSON)
-					if err != nil {
-						return err
-					}
-					payload["primitiveIds"] = ids
+				if idsJSON == "" {
+					return fmt.Errorf("--ids is required (layout ops never act on the canvas selection)")
 				}
+				ids, err := parseIDList(idsJSON)
+				if err != nil {
+					return err
+				}
+				payload["primitiveIds"] = ids
 				return dispatch(cfg, "pcb.components.arrange", window, payload, stdout, stderr)
 			},
 		}
@@ -1326,7 +1330,7 @@ the placement priorities in pcb-layout-conventions.md (easyeda-agent) afterward.
 		c.Flags().Float64Var(&pitch, "pitch", 0, "component pitch within a block")
 		c.Flags().Float64Var(&gutter, "gutter", 0, "gutter between blocks")
 		c.Flags().IntVar(&cols, "cols", 0, "columns for grid mode")
-		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (omit = current selection)")
+		c.Flags().StringVar(&idsJSON, "ids", "", "primitive IDs — CSV: id1,id2 (required; never the canvas selection)")
 		pcb.AddCommand(c)
 	}
 

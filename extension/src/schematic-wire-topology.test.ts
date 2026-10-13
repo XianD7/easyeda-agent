@@ -369,3 +369,20 @@ test('legacy disconnect still deletes a verified simple straight stub',async t=>
 	assert.deepEqual(out.result.deletedWires,['h']);
 	assert.equal(fx.mutations(),1);
 });
+
+test('bridge-check: a single-pin stub carrying a net label is labelled, an unnamed one is still an orphan', async t => {
+	// Live 2026-10-13: `sch connect --kind net_label` stubs (net name lives on the
+	// wire Name attribute, no marker primitive) were all reported ORPHAN although
+	// the netlist had them on the right nets.
+	installScene(t,{});
+	const api=(globalThis as any).eda;
+	api.sch_PrimitiveWire.getAll=async()=>[wire('labelled',[-20,0,-50,0],'U0TXD')];
+	const labelled:any=await runAction('schematic.bridgeCheck',{});
+	assert.equal(labelled.result.trees.filter((x:any)=>x.kind==='ORPHAN').length,0);
+
+	api.sch_PrimitiveWire.getAll=async()=>[wire('bare',[-20,0,-50,0],'')];
+	const bare:any=await runAction('schematic.bridgeCheck',{});
+	const orphans=bare.result.trees.filter((x:any)=>x.kind==='ORPHAN');
+	assert.equal(orphans.length,1);
+	assert.deepEqual(orphans[0].pins,['R1:1']);
+});

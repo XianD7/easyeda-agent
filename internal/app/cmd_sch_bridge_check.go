@@ -230,15 +230,15 @@ func renderBridgeReport(rep bridgeReport, w io.Writer) {
 		return
 	}
 	if s.Bridges > 0 {
-		fmt.Fprintln(w, "→ bridge (共线合并短路): delete the whole tree (sch prim-delete <wireIds+flagIds>), then re-connect each pin to its own net (sch connect)")
+		fmt.Fprintln(w, "→ bridge (共线合并短路): delete the whole tree (sch prim-delete --ids <wireIds+flagIds>), then re-connect each pin to its own net (sch connect)")
 	}
 	if s.Orphans > 0 {
 		fmt.Fprintln(w, "→ orphan (孤儿桩): the tree touches pins but carries no net flag/port — wire it to a real net or clear the stray stub (sch disconnect / prim-delete)")
 	}
 	if s.OrphanFlags > 0 {
-		fmt.Fprintln(w, "→ orphan-flag (孤儿标志): a netflag/netport sits on NO wire — delete it (sch prim-delete <flagId>) before a new wire inherits its stray net name")
+		fmt.Fprintln(w, "→ orphan-flag (孤儿标志): a netflag/netport sits on NO wire — delete it (sch prim-delete --ids <flagId>) before a new wire inherits its stray net name")
 	}
 	if s.OrphanTrees > 0 {
-		fmt.Fprintln(w, "→ orphan-tree (悬空树): flag+stub 成树却不触任何引脚(挪件残留)或纯裸死线 — `sch prim-delete <wireIds+flagIds>` 整树清掉")
+		fmt.Fprintln(w, "→ orphan-tree (悬空树): flag+stub 成树却不触任何引脚(挪件残留)或纯裸死线 — `sch prim-delete --ids <wireIds+flagIds>` 整树清掉")
 	}
 }

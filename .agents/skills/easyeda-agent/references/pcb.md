@@ -39,7 +39,7 @@ list. 工程写入只允许参数化数据经 Cobra 子命令、typed action 或
 - Every component is bound to a **layer** (`TOP` / `BOTTOM`). **No left/right mirror — only flip** (change layer via `pcb.component.modify`).
 - **No programmatic undo.** Snapshot before/after into the audit log; pull a **fresh `primitiveId`** right before mutating.
 - `pcb.component.delete` returns a boolean meaning *"operation completed"*, **not** *"actually deleted something"* — don't rely on it; verify with `pcb.components.list`.
-- Layout actions (`align` / `distribute` / `grid_snap` / `components.move` / `components.arrange`) act on the **current selection** by default; pass `primitiveIds` to target a specific set. With nothing selected and no `primitiveIds`, they error (0 targets).
+- Layout actions (`align` / `distribute` / `grid_snap` / `components.move` / `components.arrange`) require explicit `primitiveIds` (CLI `--ids`); they never act on the canvas selection, which may be the user's.
 
 ## Workflow
 

@@ -4870,7 +4870,10 @@ const schematicBridgeCheck: Handler = async (payload) => {
 		if (netList.length > 1) {
 			trees.push({ kind: 'BRIDGE', wireIds: [...t.wireIds], flagIds, pins: [...new Set(touchedPins)], nets: netList, segments: t.sources });
 		}
-		else if (flagIds.length === 0 && touchedPins.length > 0) {
+		else if (flagIds.length === 0 && netList.length === 0 && touchedPins.length > 0) {
+			// A net label is a wire Name attribute, not a marker primitive: a tree
+			// carrying a net name is labelled (live 2026-10-13: five `--kind
+			// net_label` stubs, all correct in the netlist, were false-flagged).
 			// A flagless tree touching 2+ DISTINCT pins is a legal pin-to-pin direct
 			// connection (the net just gets an auto name like $2N1792) — only a tree
 			// stuck on a SINGLE pin is a dangling stub (live 2026-08-12: the LED
@@ -12479,15 +12482,17 @@ export const pcbPageClear: Handler = async (payload) => {
 type PcbBox = { minX: number; minY: number; maxX: number; maxY: number };
 type PcbLayoutItem = { id: string; designator: string | undefined; x: number; y: number; box: PcbBox };
 
-/** Resolve target component ids: explicit primitiveIds, else the current selection. */
+/**
+ * Resolve target component ids. primitiveIds is required: the canvas selection
+ * may be the user's, so layout ops never fall back to it (same rule as
+ * schematic.primitives.delete).
+ */
 async function resolvePcbTargetIds(payload: Payload): Promise<Array<string>> {
 	const raw = payload.primitiveIds;
 	if (typeof raw === 'string') return [raw];
 	if (Array.isArray(raw) && raw.every(id => typeof id === 'string')) return raw as Array<string>;
-	try {
-		return (await eda.pcb_SelectControl.getAllSelectedPrimitives_PrimitiveId()) ?? [];
-	}
-	catch { return []; }
+	throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD,
+		'Missing required field "primitiveIds" (string or string[]); layout ops never act on the canvas selection.');
 }
 
 /** Read a component's anchor (x/y) and rendered bbox. Returns null for non-components. */
@@ -12512,7 +12517,7 @@ const pcbAlign: Handler = async (payload) => {
 	if (items.length < 2) {
 		throw new ActionError(
 			ErrorCodes.MISSING_PAYLOAD_FIELD,
-			`align needs >= 2 components (got ${items.length}); select components or pass primitiveIds.`,
+			`align needs >= 2 components (got ${items.length}); pass primitiveIds.`,
 		);
 	}
 
@@ -12595,7 +12600,7 @@ const pcbGridSnap: Handler = async (payload) => {
 	}
 	const ids = await resolvePcbTargetIds(payload);
 	if (ids.length === 0) {
-		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'No target components; select components or pass primitiveIds.');
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'No target components; pass primitiveIds.');
 	}
 
 	const snap = (v: number) => Math.round(v / grid) * grid;
@@ -12627,7 +12632,7 @@ const pcbComponentsMove: Handler = async (payload) => {
 	const dy = requireNumber(payload, 'dy');
 	const ids = await resolvePcbTargetIds(payload);
 	if (ids.length === 0) {
-		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'No target components; select components or pass primitiveIds.');
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'No target components; pass primitiveIds.');
 	}
 	const moved: Array<Record<string, unknown>> = [];
 	for (const id of ids) {
@@ -12709,7 +12714,7 @@ const pcbComponentsArrange: Handler = async (payload) => {
 	const colsIn = optionalNumber(payload, 'cols');
 	const ids = await resolvePcbTargetIds(payload);
 	if (ids.length < 2) {
-		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, `arrange needs >= 2 components (got ${ids.length}); select components or pass primitiveIds.`);
+		throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, `arrange needs >= 2 components (got ${ids.length}); pass primitiveIds.`);
 	}
 
 	const items: Array<ArrangeItem> = [];

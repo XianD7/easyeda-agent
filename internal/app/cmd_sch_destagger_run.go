@@ -198,7 +198,9 @@ func runSchDestagger(cfg *appConfig, window string, apply bool, maxRounds, maxMo
 		if kerr := destaggerKernelRound(cfg, window, comps, batch, false, stdout, stderr); kerr != nil {
 			rep.Regressions = append(rep.Regressions, kerr.Error())
 			_ = emitDestaggerJSON(stdout, asJSON, rep)
-			return fmt.Errorf("destagger 内核执行失败(内核已按快照自动恢复,详见错误):%w", kerr)
+			// 不替内核下"已恢复"的结论:内核错误里既可能是恢复成功,也可能是
+			// "恢复重连未跑起来"(2026-10-13 现场:同一条输出两句互相矛盾)。
+			return fmt.Errorf("destagger 内核执行失败(恢复结果以下方错误为准;未写明恢复成功即按未恢复处理,先 `sch nets --all` + `sch check` 回读):%w", kerr)
 		}
 		rep.Moved = append(rep.Moved, batch...)
 
