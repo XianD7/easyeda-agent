@@ -138,24 +138,6 @@ func reportStateIdentity(project string, bind workflow.BindResult, stderr io.Wri
 	}
 }
 
-// warnForeignPages reports page bookkeeping that is PROVEN to belong to another
-// project (same name, different uuid). Data-driven, so it keeps saying it on
-// every run until the user prunes — unlike the bind-time finding, which is only
-// observable the one time the uuid changes.
-func warnForeignPages(project string, st *pcbStageState, stderr io.Writer) {
-	if stderr == nil || st == nil {
-		return
-	}
-	foreign := st.ForeignPages(st.BoundUUID())
-	if len(foreign) == 0 {
-		return
-	}
-	fmt.Fprintf(stderr, "⚠️  工程状态 %q 里有 %d 页属于别的工程(同名重建的残留:%s)——"+
-		"它们**不参与**跨页匹配(spec 回填 / 分区打分),数据一个字节没动。"+
-		"确认要清掉:`easyeda workflow pages --project %s --prune`\n",
-		project, len(foreign), strings.Join(foreign, ", "), project)
-}
-
 // pullLayoutPoses reads the live placement poses (designator/x/y/rotation/layer)
 // the layout fingerprint is derived from.
 func pullLayoutPoses(cfg *appConfig, window string) ([]stageComponentPose, error) {

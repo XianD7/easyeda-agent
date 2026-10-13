@@ -244,6 +244,7 @@ type pcbCheckSummary struct {
 	NetlessViaInPad   int `json:"netlessViaInPad"`
 	WidthUnderSpec    int `json:"widthUnderSpec"`
 	SilkOverPad       int `json:"silkOverPad"`
+	SilkOffBoard      int `json:"silkOffBoard"`
 	DecapTooFar       int `json:"decapTooFar"`
 	ViaInPad          int `json:"viaInPad"`
 	CopperNearEdge    int `json:"copperNearEdge"`
@@ -1988,6 +1989,24 @@ func gatherPcbCheckReport(cfg *appConfig, window string, couplingW float64, chec
 		rep.Passed = rep.Summary.Total == 0
 	}
 
+	// Visible silk outside the board outline is not printed (live 2026-10-13:
+	// U1's designator sat above the board edge while layout-lint reported 0
+	// off-board, since it only judges pads). Unreadable outline → incomplete.
+	if board, drawn, oerr := fetchPcbOutlineBBox(cfg, window); oerr != nil {
+		rep.Incomplete = true
+		rep.Limitations = append(rep.Limitations, "silk-off-board check incomplete: "+oerr.Error())
+	} else if !drawn {
+		rep.Limitations = append(rep.Limitations, "silk-off-board not judged: no board outline drawn yet")
+	} else {
+		for _, f := range findSilkOffBoard(silk, board) {
+			rep.Findings = append(rep.Findings, f)
+			rep.Summary.SilkOffBoard++
+			rep.Summary.Warnings++
+			rep.Summary.Total++
+		}
+		rep.Passed = rep.Summary.Total == 0
+	}
+
 	// Netless-pour + via-crosses-plane + floating-track-island + power-not-poured
 	// + width-under-spec are LIVE-only rules (they need the pour lists / the
 	// stackup / the live width ladder, which the pure copper core doesn't take).
@@ -2441,9 +2460,9 @@ func renderPcbCheckReport(rep pcbCheckReport, w io.Writer) {
 		fmt.Fprintln(w, "  ✓ no DFM issues found")
 		return
 	}
-	fmt.Fprintf(w, "  ERROR=%d WARN=%d  |  dangling=%d acute=%d nonOrtho=%d overPad=%d clearance=%d silkFlipped=%d overlapVia=%d singleLayerVia=%d widthMismatch=%d dupSegment=%d coupling=%d antennaKeepout=%d netlessPour=%d viaCrossesPlane=%d floatingIsland=%d powerNotPoured=%d netlessViaInPad=%d widthUnderSpec=%d silkOverPad=%d decapTooFar=%d viaInPad=%d copperNearEdge=%d fiducialMissing=%d zoneViolation=%d internalOnEdge=%d plugClearance=%d matingBlocked=%d\n",
+	fmt.Fprintf(w, "  ERROR=%d WARN=%d  |  dangling=%d acute=%d nonOrtho=%d overPad=%d clearance=%d silkFlipped=%d overlapVia=%d singleLayerVia=%d widthMismatch=%d dupSegment=%d coupling=%d antennaKeepout=%d netlessPour=%d viaCrossesPlane=%d floatingIsland=%d powerNotPoured=%d netlessViaInPad=%d widthUnderSpec=%d silkOverPad=%d silkOffBoard=%d decapTooFar=%d viaInPad=%d copperNearEdge=%d fiducialMissing=%d zoneViolation=%d internalOnEdge=%d plugClearance=%d matingBlocked=%d\n",
 		s.Errors, s.Warnings-s.Errors,
-		s.DanglingEnds, s.AcuteAngles, s.NonOrthogonal, s.TrackOverPad, s.Clearance, s.SilkscreenFlipped, s.OverlappingVias, s.SingleLayerVias, s.WidthMismatches, s.DuplicateSegments, s.ParallelCoupling, s.AntennaKeepout, s.NetlessPours, s.ViaCrossesPlane, s.FloatingIslands, s.PowerNotPoured, s.NetlessViaInPad, s.WidthUnderSpec, s.SilkOverPad, s.DecapTooFar, s.ViaInPad, s.CopperNearEdge, s.FiducialMissing, s.ZoneViolation, s.InternalOnEdge, s.ConnectorPlugClearance, s.ConnectorMatingBlocked)
+		s.DanglingEnds, s.AcuteAngles, s.NonOrthogonal, s.TrackOverPad, s.Clearance, s.SilkscreenFlipped, s.OverlappingVias, s.SingleLayerVias, s.WidthMismatches, s.DuplicateSegments, s.ParallelCoupling, s.AntennaKeepout, s.NetlessPours, s.ViaCrossesPlane, s.FloatingIslands, s.PowerNotPoured, s.NetlessViaInPad, s.WidthUnderSpec, s.SilkOverPad, s.SilkOffBoard, s.DecapTooFar, s.ViaInPad, s.CopperNearEdge, s.FiducialMissing, s.ZoneViolation, s.InternalOnEdge, s.ConnectorPlugClearance, s.ConnectorMatingBlocked)
 	for _, f := range rep.Findings {
 		loc := ""
 		if f.At != nil {
@@ -2498,4 +2517,61 @@ func isDeclaredDiffPair(a, b string, pairs []pcbDiffPair) bool {
 		}
 	}
 	return false
+}
+
+// fetchPcbOutlineBBox reads the board outline bbox (center-line, else the
+// rendered bbox). drawn=false with a nil error means the read succeeded and the
+// board has no outline yet; an error means the outline could not be read.
+func fetchPcbOutlineBBox(cfg *appConfig, window string) (pcbRect, bool, error) {
+	res, err := requestAction(cfg, "pcb.outline.get", window, nil)
+	if err != nil {
+		return pcbRect{}, false, err
+	}
+	bb, ok := res.Result["centerlineBBox"].(map[string]any)
+	if !ok {
+		bb, ok = res.Result["bbox"].(map[string]any)
+	}
+	if !ok {
+		return pcbRect{}, false, nil
+	}
+	var r pcbRect
+	var oks [4]bool
+	r.MinX, oks[0] = asFloatOK(bb["minX"])
+	r.MinY, oks[1] = asFloatOK(bb["minY"])
+	r.MaxX, oks[2] = asFloatOK(bb["maxX"])
+	r.MaxY, oks[3] = asFloatOK(bb["maxY"])
+	if !oks[0] || !oks[1] || !oks[2] || !oks[3] || r.MaxX <= r.MinX || r.MaxY <= r.MinY {
+		return pcbRect{}, false, fmt.Errorf("board outline bbox unreadable")
+	}
+	return r, true, nil
+}
+
+// findSilkOffBoard flags visible silkscreen texts whose rendered extent (or,
+// without a bbox, anchor) leaves the board outline bbox. Hidden texts and texts
+// of unknown visibility are not judged. Silk layers only.
+func findSilkOffBoard(silk []pcbSilkText, board pcbRect) []pcbCheckFinding {
+	var out []pcbCheckFinding
+	for _, s := range silk {
+		if (s.Layer != silkTopLayer && s.Layer != silkBottomLayer) || s.Visible == nil || !*s.Visible {
+			continue
+		}
+		ext := pcbRect{MinX: s.X, MinY: s.Y, MaxX: s.X, MaxY: s.Y}
+		if s.BBox != nil {
+			ext = *s.BBox
+		}
+		if ext.MinX >= board.MinX && ext.MaxX <= board.MaxX && ext.MinY >= board.MinY && ext.MaxY <= board.MaxY {
+			continue
+		}
+		label := s.Text
+		if label == "" {
+			label = s.ID
+		}
+		out = append(out, pcbCheckFinding{
+			Type: "silk-off-board", Level: "WARN", Layer: s.Layer, Designator: label,
+			Primitives: []string{s.ID}, At: &pcbXY{round2(s.X), round2(s.Y)},
+			Message: fmt.Sprintf("silkscreen text '%s' extends outside the board outline (text %.0f..%.0f × %.0f..%.0f mil, board %.0f..%.0f × %.0f..%.0f) — it will not be printed; move it with `pcb silk-set --ids %s --x … --y …`",
+				label, ext.MinX, ext.MaxX, ext.MinY, ext.MaxY, board.MinX, board.MaxX, board.MinY, board.MaxY, s.ID),
+		})
+	}
+	return out
 }

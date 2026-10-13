@@ -56,6 +56,20 @@ obtain separate full readbacks and a successful save/reload cycle for acceptance
 			if len(args) == 1 {
 				target = args[0]
 			}
+			if target == "" && cfg.doc != "" {
+				// --doc takes a page/PCB name elsewhere; resolve it here through the
+				// read-only document listing so the readiness core keeps its
+				// current+inventory-only read set and never navigates.
+				docs, _, _, derr := discoverDocs(cfg, win)
+				if derr != nil {
+					return fmt.Errorf("doc ready --doc %q: cannot list documents to resolve it: %w", cfg.doc, derr)
+				}
+				want, rerr := resolveDoc(docs, cfg.doc)
+				if rerr != nil {
+					return fmt.Errorf("doc ready --doc %q: %w", cfg.doc, rerr)
+				}
+				target = want.UUID
+			}
 			observation, err := verifyDocumentReady(cfg, win, target, budget)
 			if err != nil {
 				return err

@@ -875,8 +875,15 @@ func fetchBoardSnapshot(cfg *appConfig, window string, opts boardSnapshotOpts) (
 
 	// 板框：pcb.outline.get 在 PCB 非前台时返 null（既有坑），此时 outline 为 nil，
 	// 所有「到板边」维度必须降级而不是当成 0 距离。
+	outlineRead, outlineEmpty := false, false
 	if ores, oerr := capture.read(cfg, "pcb.outline.get", window, nil); oerr == nil && ores != nil {
+		outlineRead = true
 		snap.Outline = parseBoardOutline(ores.Result)
+		// A successful read with zero segments and no bbox is "no outline drawn
+		// yet", not a read failure (live 2026-10-13: the old note sent the user
+		// hunting for a foreground problem on a board that simply had no outline).
+		segs, _ := ores.Result["segments"].(float64)
+		outlineEmpty = segs == 0 && ores.Result["bbox"] == nil
 	}
 	snap.Availability["outline"] = "unknown"
 	if snap.Outline != nil {
@@ -896,7 +903,14 @@ func fetchBoardSnapshot(cfg *appConfig, window string, opts boardSnapshotOpts) (
 		snap.Availability["routedLines"] = "available"
 	}
 	if snap.Outline == nil {
-		snap.note("board outline unavailable (is the PCB the foreground document?) — edge/off-board dimensions skipped")
+		switch {
+		case outlineRead && outlineEmpty:
+			snap.note("no board outline drawn yet — edge/off-board dimensions skipped (draw one with `pcb outline-round` / `pcb outline-set`)")
+		case outlineRead:
+			snap.note("board outline read but not parseable — edge/off-board dimensions skipped")
+		default:
+			snap.note("board outline unavailable (read failed; is the PCB the foreground document?) — edge/off-board dimensions skipped")
+		}
 	} else if snap.Outline.Source != "polygon" {
 		// 把连接器给的原因带上：是旧连接器没这个字段、还是板框用了我们解析不了的
 		// 圆弧命令、还是外框层上有多条 polyline 分不清哪条是边界。三种成因的处置
@@ -1060,8 +1074,44 @@ func boardSnapshotSemanticSHA256(s *boardSnapshot) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256(raw)
+	// Host getters return the same geometry with float noise across a reload
+	// (-200.30700000000001 vs -200.307; live 2026-10-13: identical board, two
+	// hashes). Hash a canonical form with every number rounded to 0.001 mil so
+	// the digest tracks design changes, not IEEE-754 jitter.
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return "", err
+	}
+	canonical, err := json.Marshal(roundSemanticNumbers(tree))
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// roundSemanticNumbers rounds every JSON number to 1e-3 (normalising -0 to 0).
+func roundSemanticNumbers(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			t[k] = roundSemanticNumbers(x)
+		}
+		return t
+	case []any:
+		for i, x := range t {
+			t[i] = roundSemanticNumbers(x)
+		}
+		return t
+	case float64:
+		r := math.Round(t*1000) / 1000
+		if r == 0 {
+			return 0.0
+		}
+		return r
+	default:
+		return v
+	}
 }
 
 // loadBoardSnapshotFile 从磁盘读回一份快照（金标准回归 / --from 离线打分）。

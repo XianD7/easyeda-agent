@@ -197,3 +197,19 @@ func TestPcbCheck_DFM2_CleanBoardStillClean(t *testing.T) {
 		t.Fatalf("expected clean board, got %d findings: %+v", rep.Summary.Total, rep.Findings)
 	}
 }
+
+func TestFindSilkOffBoardFlagsOnlyVisibleSilkOutsideTheOutline(t *testing.T) {
+	yes, no := true, false
+	board := pcbRect{MinX: -240, MinY: -1600, MaxX: 940, MaxY: -343}
+	silk := []pcbSilkText{
+		// Live 2026-10-13: U1 designator above the board's top edge.
+		{ID: "u1", Text: "U1", Layer: silkTopLayer, X: 0, Y: -337.7, Visible: &yes, BBox: &pcbRect{MinX: 0, MinY: -337.7, MaxX: 52, MaxY: -292.7}},
+		{ID: "c1", Text: "C1", Layer: silkTopLayer, X: -200, Y: -761, Visible: &yes, BBox: &pcbRect{MinX: -200, MinY: -761, MaxX: -158, MaxY: -716}},
+		{ID: "hidden", Text: "C0805", Layer: silkTopLayer, X: -1068, Y: -504, Visible: &no},
+		{ID: "unknown", Text: "?", Layer: silkTopLayer, X: -1068, Y: -504},
+	}
+	got := findSilkOffBoard(silk, board)
+	if len(got) != 1 || got[0].Designator != "U1" || got[0].Type != "silk-off-board" {
+		t.Fatalf("want only U1 flagged, got %+v", got)
+	}
+}

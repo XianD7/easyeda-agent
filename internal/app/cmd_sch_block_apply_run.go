@@ -1578,16 +1578,12 @@ func bapRegisterGroup(cfg *appConfig, window string, plan bapPlan, man *bapManif
 	if len(members) == 0 {
 		return
 	}
-	pinned, win, docUUID, project, st, groups, err := loadSchGroupsContext(cfg, window)
+	pinned, win, docUUID, _, st, groups, err := loadSchGroupsContext(cfg, window)
 	if err != nil {
 		fmt.Fprintf(stderr, "warn: 归组跳过(取不到页面分组表:%v)—— 器件与连线均已落地,上层布局会把它们当散件;可手工补登:easyeda sch group create --name %q --members %s\n",
 			err, bapGroupName(plan), strings.Join(members, ","))
 		return
 	}
-	// 归组是**写组表**的那一刻,也就是同名重建残留最该被说出来的那一刻:这份
-	// 状态文件里若还堆着另一个同名工程的页,跨页读取(spec 回填)的分母就是脏的。
-	// 只报不删(loadSchGroupsContext 已按活体 uuid 绑定,新写的这一页会盖上正确的戳)。
-	warnForeignPages(project, st, stderr)
 	_ = pinned
 	_ = win
 	roles := map[string]string{}

@@ -155,6 +155,10 @@ func TestPcbAntennaKeepoutEvidence(t *testing.T) {
 					case "geometry-unavailable":
 						result["geometryAvailable"] = false
 					}
+				case "pcb.outline.get":
+					// No outline drawn: coverage is judged over the full plan rect,
+					// exactly as before the board-edge clip existed.
+					result = map[string]any{"segments": float64(0), "centerlineBBox": nil}
 				default:
 					t.Errorf("unexpected action: %s", request.Action)
 				}
@@ -254,6 +258,8 @@ func TestPcbAntennaKeepoutStopsAfterFirstUnverifiedWrite(t *testing.T) {
 					result = map[string]any{"copperLayerCount": 2}
 				case "pcb.region.list":
 					result = map[string]any{"regions": []any{}}
+				case "pcb.outline.get":
+					result = map[string]any{"segments": float64(0), "centerlineBBox": nil}
 				case "pcb.region.create":
 					writes++
 					if writes == failAt {
@@ -294,5 +300,20 @@ func TestPcbAntennaKeepoutStopsAfterFirstUnverifiedWrite(t *testing.T) {
 				t.Fatalf("lost prior successful PID: %s", out.String())
 			}
 		})
+	}
+}
+
+func TestAntennaOnBoardRectClipsCoverageToBoard(t *testing.T) {
+	board := &layoutBBox{MinX: -240, MinY: -1600, MaxX: 940, MaxY: -343}
+	// Live 2026-10-13 plan: 20 mil outward margin crosses the top edge.
+	got := antennaOnBoardRect([4]float64{-20, -603, 768, -323}, board)
+	if got != [4]float64{-20, -603, 768, -343} {
+		t.Fatalf("clipped = %v", got)
+	}
+	if antennaOnBoardRect([4]float64{1, 2, 3, 4}, nil) != [4]float64{1, 2, 3, 4} {
+		t.Fatal("unknown outline must keep the full rect")
+	}
+	if antennaOnBoardRect([4]float64{2000, 0, 2100, 10}, board) != [4]float64{2000, 0, 2100, 10} {
+		t.Fatal("no overlap must keep the full rect, never an empty one")
 	}
 }

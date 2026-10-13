@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 
 	"github.com/zhoushoujianwork/easyeda-agent/internal/blocks"
@@ -119,6 +120,22 @@ func runPcbAntennaKeepout(cfg *appConfig, window string, opts pcbAntennaKeepoutO
 		return report(fmt.Errorf("antenna region inventory unavailable (explicit array required)"))
 	}
 	existing := parseAntennaKeepRegions(rres.Result)
+	// Copper cannot exist past the board edge, so coverage is judged only over
+	// the on-board part of the planned rect (live 2026-10-13: the 20 mil outward
+	// margin crossed the edge and a board-wide keep-out never counted as cover).
+	// Unreadable outline → judge the full rect (conservative).
+	var board *layoutBBox
+	if ores, oerr := requestAction(cfg, "pcb.outline.get", window, nil); oerr == nil && ores != nil {
+		if bb, ok := ores.Result["centerlineBBox"].(map[string]any); ok {
+			minX, ok1 := asFloatOK(bb["minX"])
+			minY, ok2 := asFloatOK(bb["minY"])
+			maxX, ok3 := asFloatOK(bb["maxX"])
+			maxY, ok4 := asFloatOK(bb["maxY"])
+			if ok1 && ok2 && ok3 && ok4 && maxX > minX && maxY > minY {
+				board = &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
+			}
+		}
+	}
 	for _, cm := range antennas {
 		device := resolveAntennaDevice(silkDev[asString(cm["primitiveId"])], cm)
 		desig := asString(cm["designator"])
@@ -163,7 +180,7 @@ func runPcbAntennaKeepout(cfg *appConfig, window string, opts pcbAntennaKeepoutO
 		}
 		rect := [4]float64{x0, y0, x1, y1}
 		rules := antennaCommandRules(chip)
-		if len(antennaCoverageMissing(rect, rules[:len(rules)-1], existing, int(layerCount))) == 0 {
+		if len(antennaCoverageMissing(antennaOnBoardRect(rect, board), rules[:len(rules)-1], existing, int(layerCount))) == 0 {
 			skipped = append(skipped, map[string]any{"designator": desig, "reason": "already covered by complete polygon/rule/layer evidence"})
 			continue
 		}
@@ -289,4 +306,17 @@ func antennaCommandCaptureIssue(component map[string]any, key string) string {
 		return "pad capture is incomplete"
 	}
 	return ""
+}
+
+// antennaOnBoardRect clips a planned keep-out rect to the board outline bbox
+// for coverage judgement. No outline, or no overlap, keeps the full rect.
+func antennaOnBoardRect(rect [4]float64, board *layoutBBox) [4]float64 {
+	if board == nil {
+		return rect
+	}
+	clipped := [4]float64{math.Max(rect[0], board.MinX), math.Max(rect[1], board.MinY), math.Min(rect[2], board.MaxX), math.Min(rect[3], board.MaxY)}
+	if clipped[0] >= clipped[2] || clipped[1] >= clipped[3] {
+		return rect
+	}
+	return clipped
 }

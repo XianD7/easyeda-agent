@@ -95,3 +95,25 @@ func TestBoardSnapshotPreservesExactPadShapeAndSpecialPad(t *testing.T) {
 		t.Fatalf("pad geometry was dropped: shape=%#v special=%#v", pad.Shape, pad.SpecialPad)
 	}
 }
+
+func TestBoardSnapshotSemanticHashIgnoresFloatJitter(t *testing.T) {
+	// Live 2026-10-13: save → reload returned the same board with getter noise
+	// (-200.30700000000001 vs -200.307) and the semantic hash changed anyway.
+	a := lpSnapshot(lpComp("c1", "C1", -200.30700000000001, -761.4249999999998, 0, lpBBox(-200.3070000000001, -843.5749999999998, -39.69300000000004, -761.4)))
+	b := lpSnapshot(lpComp("c1", "C1", -200.307, -761.425, 0, lpBBox(-200.307, -843.575, -39.692999999999984, -761.4)))
+	ha, err := boardSnapshotSemanticSHA256(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hb, err := boardSnapshotSemanticSHA256(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ha != hb {
+		t.Fatalf("float jitter changed the semantic hash: %s != %s", ha, hb)
+	}
+	b.Components[0].X += 0.01
+	if hc, _ := boardSnapshotSemanticSHA256(b); hc == hb {
+		t.Fatal("a real 0.01 mil move must change the semantic hash")
+	}
+}
