@@ -320,6 +320,7 @@ EasyEDA 交互界面兜底。能力边界与未来 typed 验收见 [project-impo
 |---|---|---|
 | `project.open` | `projectUuid`、`allowDiscardUnsaved:true`，可选 `pageUuid` | 官方打开后核对工程；指定原理图页时等待树就绪并核对页面；先保存所有文档 |
 | `project.export` | `projectUuid` | 仅导出当前匹配工程，前后核对身份；返回 `uuid/format/size/base64`，最大 16 MiB |
+| `project.import` | `fileName`、`base64`、`friendlyName`，可选 `teamUuid`、`importOption` | `planned`：官方 @beta 导入为**新工程**，不打开；空返回或超时为结果未知，先 `project find`；内容须打开后回读对账 |
 
 CLI `project open --project-uuid` 与 `project export` 封装上述 action；导出 CLI 负责 ZIP/CRC 校验、禁止覆盖与 SHA-256。MCP 使用 `easyeda_project_transfer`。需要包含 handler 的连接器，无调试脚本回退；具体参数与恢复验证边界见 [project-import.md](project-import.md)。
 

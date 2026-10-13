@@ -105,3 +105,76 @@ func TestProjectTransferDispatchesTypedActions(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectImportValidatesAndDispatchesNewProjectOnly(t *testing.T) {
+	dir := t.TempDir()
+	var b bytes.Buffer
+	z := zip.NewWriter(&b)
+	w, _ := z.Create("project.epru")
+	w.Write([]byte("native fixture"))
+	z.Close()
+	good := filepath.Join(dir, "good.epro2")
+	os.WriteFile(good, b.Bytes(), 0644)
+	var nb bytes.Buffer
+	nz := zip.NewWriter(&nb)
+	nw, _ := nz.Create("blink/blink.eprj3")
+	nw.Write([]byte("{}"))
+	nz.Close()
+	noEpru := filepath.Join(dir, "folder.epro2")
+	os.WriteFile(noEpru, nb.Bytes(), 0644)
+	packed := filepath.Join(dir, "folder.zip")
+	os.WriteFile(packed, nb.Bytes(), 0644)
+	notZip := filepath.Join(dir, "bad.epro2")
+	os.WriteFile(notZip, []byte("bad"), 0644)
+
+	var reqs []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Write([]byte(`{"service":"easyeda-agent","windows":[{"windowId":"w"}]}`))
+			return
+		}
+		var req struct {
+			Action  string         `json:"action"`
+			Payload map[string]any `json:"payload"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		if req.Action != "project.import" {
+			t.Errorf("unexpected action %q", req.Action)
+		}
+		reqs = append(reqs, req.Payload)
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": map[string]any{"uuid": "new", "created": true}})
+	}))
+	defer srv.Close()
+	host, port, _ := strings.Cut(strings.TrimPrefix(srv.URL, "http://"), ":")
+	run := func(args ...string) int {
+		var out, errb bytes.Buffer
+		return Run(append([]string{"--host", host, "--ports", port + "-" + port, "project", "import"}, args...), &out, &errb)
+	}
+	for _, bad := range [][]string{
+		{"--window", "w", "--file", good},                                       // no name
+		{"--file", good, "--name", "n"},                                         // no window
+		{"--window", "w", "--file", filepath.Join(dir, "a.txt"), "--name", "n"}, // extension
+		{"--window", "w", "--file", notZip, "--name", "n"},                      // not a ZIP
+		{"--window", "w", "--file", noEpru, "--name", "n"},                      // epro2 without epru
+	} {
+		if run(bad...) == 0 {
+			t.Fatalf("accepted %v", bad)
+		}
+	}
+	if len(reqs) != 0 {
+		t.Fatalf("invalid input reached the connector: %d", len(reqs))
+	}
+	if run("--window", "w", "--file", good, "--name", "n", "--team-uuid", "team") != 0 {
+		t.Fatal("rejected valid epro2")
+	}
+	if run("--window", "w", "--file", packed, "--name", "n2", "--extract-libraries") != 0 {
+		t.Fatal("rejected valid zip packaging")
+	}
+	if len(reqs) != 2 || reqs[0]["friendlyName"] != "n" || reqs[0]["teamUuid"] != "team" || reqs[0]["importOption"] != nil ||
+		reqs[1]["importOption"] != "ImportDocumentExtractLibraries" || reqs[1]["fileName"] != "folder.zip" {
+		t.Fatalf("unexpected payloads: %+v", reqs)
+	}
+	if got, _ := base64.StdEncoding.DecodeString(reqs[0]["base64"].(string)); !bytes.Equal(got, b.Bytes()) {
+		t.Fatal("archive bytes changed in transport")
+	}
+}

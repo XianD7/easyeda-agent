@@ -60,6 +60,47 @@ export async function projectOpen(payload: Payload): Promise<ActionResult> {
 		...(document ? { documentUuid: document.uuid, documentVerified: true } : {}) } };
 }
 
+const IMPORT_OPTIONS = ['ImportDocument', 'ImportDocumentExtractLibraries'];
+const IMPORT_TIMEOUT_MS = 120000;
+
+/**
+ * Import a native project file as a NEW project (never into an existing one).
+ * The official call is @beta and may wait on host UI, so a timeout leaves the
+ * outcome unknown: the caller must list projects before any retry.
+ */
+export async function projectImport(payload: Payload): Promise<ActionResult> {
+	const fileName = requireString(payload, 'fileName');
+	const encoded = requireString(payload, 'base64');
+	const friendlyName = requireString(payload, 'friendlyName');
+	if (!fileName.trim() || !friendlyName.trim()) throw new ActionError(ErrorCodes.MISSING_PAYLOAD_FIELD, 'fileName and friendlyName must not be blank.');
+	const importOption = payload.importOption === undefined ? 'ImportDocument' : requireString(payload, 'importOption');
+	if (!IMPORT_OPTIONS.includes(importOption)) throw new ActionError(ErrorCodes.PRECONDITION_REFUSED, `importOption must be one of ${IMPORT_OPTIONS.join(', ')}.`);
+	if (encoded.length > Math.ceil(ARCHIVE_LIMIT / 3) * 4) fail('Project file exceeds 16 MiB transport limit.');
+	const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+	if (!bytes.length || bytes.length > ARCHIVE_LIMIT) fail('Project file empty or exceeds 16 MiB transport limit.');
+	let teamUuid = payload.teamUuid === undefined ? undefined : requireString(payload, 'teamUuid');
+	if (!teamUuid) teamUuid = (await eda.dmt_Project.getCurrentProjectInfo())?.teamUuid;
+	if (!teamUuid) fail('No teamUuid given and the active project has none; pass teamUuid explicitly.');
+	const file = new File([bytes], fileName);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new ActionError(ErrorCodes.EDA_CALL_FAILED,
+			'Project import did not settle; outcome unknown. List projects by friendlyName before retrying.')), IMPORT_TIMEOUT_MS);
+	});
+	let brief;
+	try {
+		brief = await Promise.race([eda.sys_FileManager.importProjectByProjectFile(file, 'EasyEDA Pro',
+			{ importOption: importOption as ESYS_ImportProjectImportOption },
+			{ operation: 'New Project', newProjectOwnerTeamUuid: teamUuid, newProjectFriendlyName: friendlyName }), deadline]);
+	}
+	finally { clearTimeout(timer); }
+	if (!brief?.uuid) fail('Official project import returned no project; outcome unknown (issue #203). Run project find by friendlyName before retrying.');
+	const info = await eda.dmt_Project.getProjectInfo(brief.uuid);
+	if (!info || info.uuid !== brief.uuid) fail('Imported project is not readable by UUID; inspect project list before retrying.');
+	return { result: { uuid: info.uuid, friendlyName: info.friendlyName, teamUuid: info.teamUuid, importOption,
+		bytes: bytes.length, created: true, verified: true, contentVerified: false } };
+}
+
 /** Read-only export of the explicitly identified active project; no script input. */
 export async function projectExport(payload: Payload): Promise<ActionResult> {
 	const target = targetOf(payload);

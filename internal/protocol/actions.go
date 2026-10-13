@@ -107,6 +107,13 @@ func AllActions() []ActionSpec {
 			VerifyWith:  []string{"project.current"},
 		},
 		{
+			Name: "project.import", Domain: DomainProject, Phase: 1, Mutates: true, NeedsWindow: true,
+			Description: "Import a native project file (epro2 or other EasyEDA Pro archive) as a NEW project via the @beta official importer; never writes into an existing project and does not open it. teamUuid defaults to the active project's team. A timeout means the outcome is unknown: list projects before retrying. Content is not verified; open and read back the new project.",
+			Inputs:      []string{"fileName", "base64", "friendlyName", "teamUuid optional", "importOption optional (ImportDocument|ImportDocumentExtractLibraries)"},
+			Outputs:     []string{"uuid", "friendlyName", "teamUuid", "importOption", "bytes", "created", "verified", "contentVerified=false"},
+			VerifyWith:  []string{"project.find", "project.open"},
+		},
+		{
 			Name:        "document.current",
 			Domain:      DomainDocument,
 			Phase:       1,

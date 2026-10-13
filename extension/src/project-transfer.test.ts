@@ -46,3 +46,38 @@ for (const scenario of ['open', 'open-page-delayed', 'open-page-missing', 'open-
 		} finally { scope.eda = old; globalThis.setTimeout = oldTimer; }
 	});
 }
+
+for (const scenario of ['import', 'import-explicit-team', 'import-no-team', 'import-bad-option', 'import-empty', 'import-none', 'import-unreadable', 'import-blank-name']) {
+	test(`typed project import: ${scenario}`, async () => {
+		const scope = globalThis as unknown as { eda: unknown };
+		const old = scope.eda;
+		let imports = 0;
+		let seen: { name?: string; size?: number; type?: unknown; props?: unknown; saveTo?: Record<string, unknown> } = {};
+		scope.eda = {
+			dmt_Project: {
+				getCurrentProjectInfo: async () => (scenario === 'import-no-team' ? { uuid: 'active' } : { uuid: 'active', teamUuid: 'team-active' }),
+				getProjectInfo: async (id: string) => (scenario === 'import-unreadable' ? undefined : { uuid: id, friendlyName: 'blink', teamUuid: 'team-active' }),
+			},
+			sys_FileManager: { importProjectByProjectFile: async (file: File, type: unknown, props: unknown, saveTo: Record<string, unknown>) => {
+				imports++; seen = { name: file.name, size: file.size, type, props, saveTo };
+				return scenario === 'import-none' ? undefined : { uuid: 'new-project' };
+			} },
+		};
+		try {
+			const payload: Record<string, unknown> = { fileName: 'blink.epro2', base64: scenario === 'import-empty' ? '' : Buffer.from('PKfixture').toString('base64'),
+				friendlyName: scenario === 'import-blank-name' ? ' ' : 'blink' };
+			if (scenario === 'import-explicit-team') payload.teamUuid = 'team-x';
+			if (scenario === 'import-bad-option') payload.importOption = 'ExtractLibraries';
+			const op = runAction('project.import', payload);
+			if (scenario === 'import' || scenario === 'import-explicit-team') {
+				const got = await op;
+				assert.equal(got.result?.uuid, 'new-project');
+				assert.equal(got.result?.contentVerified, false);
+				assert.deepEqual(seen, { name: 'blink.epro2', size: 9, type: 'EasyEDA Pro', props: { importOption: 'ImportDocument' },
+					saveTo: { operation: 'New Project', newProjectOwnerTeamUuid: scenario === 'import' ? 'team-active' : 'team-x', newProjectFriendlyName: 'blink' } });
+			} else await assert.rejects(op);
+			if (['import-no-team', 'import-bad-option', 'import-empty', 'import-blank-name'].includes(scenario)) assert.equal(imports, 0);
+			assert.ok(imports <= 1);
+		} finally { scope.eda = old; }
+	});
+}

@@ -90,7 +90,7 @@ EasyEDA Pro。Agent 不得用交互界面、CUA、`debug.exec_js`、分块 base6
 - `getAllProjectsUuid()` 在本地工作区可能返回 `[]`，不能单独作为导入副作用判据。
 - `eda.sys_FormatConversion.convertAltiumDesignerLibrariesToEasyEDA*` 只转换
   `.SchLib` / `.PcbLib` 库文件，不转换 `.SchDoc` / `.PcbDoc` 工程文档。
-- 当前不封装 `import.ad` typed action。将来只有在受支持宿主上证明真实副作用，并能在
+- 当前不封装 `import.ad` typed action；原生归档导入见下文 `project import`，状态 `planned`。将来只有在受支持宿主上证明真实副作用，并能在
   返回值缺失、超时和部分导入时明确失败，才可进入 CLI/action 实现。
 
 未来接口封装至少要在写入前记录目标工程指纹，并在返回后核对工程/文档身份、文档清单、
@@ -123,3 +123,20 @@ MCP 使用 `easyeda_project_transfer`，`operation` 为 `open` 或 `export`，�
 此工具需要含上述 CLI 命令的匹配构建；不要仅替换 MCP 而仍使用旧 CLI。
 
 工程身份可能先于文档树就绪。需直接进入原理图时，打开命令同时传 `--page-uuid`（MCP `pageUuid`），等待目标页面出现在树中后只打开一次，并核对工程和页面身份。省略此参数只保证工程身份，不保证页面已加载。
+
+## 原生归档导入（`planned`，待 Web 现场验证）
+
+```bash
+easyeda project import --window <window-id> --file ./design.epro2 --name <新工程友好名>
+```
+
+调用 `project.import`（官方 @beta `importProjectByProjectFile`，类型 `EasyEDA Pro`），只创建
+**新工程**，不写入已有工程、不自动打开。CLI 先校验 ZIP/CRC（`.epro2` 须含 `.epru`），
+上限同导出；`.zip` 允许实验性打包（例如 eprj3 文件夹）。团队默认取当前工程的团队，可用
+`--team-uuid` 指定；`--extract-libraries` 才把内嵌库提取到团队库。
+
+成功只说明官方返回了可按 UUID 读取的新工程，回执 `contentVerified:false`。之后必须
+`project open` 新工程，回读原理图连接、PCB 与 DRC，并与源文件对账。返回空值或超时都是
+**结果未知**：按 [#203](https://github.com/zhoushoujianwork/easyeda-agent/issues/203) 的
+桌面端经验，空返回也不能当作未创建；先 `project find --name <名称> --team <teamUuid>`，
+不得盲目重导入。Web 端行为未经现场验证前，不得标 `live-verified`。

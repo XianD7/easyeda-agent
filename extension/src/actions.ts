@@ -1,4 +1,4 @@
-import { projectOpen, projectExport } from './project-transfer';
+import { projectOpen, projectExport, projectImport } from './project-transfer';
 import { moveSchematicAttribute } from './schematic-attribute-move';
 import { documentSourceGet, documentSourceRoundtrip } from './document-source';
 import { applyAndVerifyPourOrder, preparePourOrder, PourOrderError, verifyPourOrderReadback, type PourOrderVerification } from './pcb-pour-order';
@@ -15203,6 +15203,7 @@ const HANDLERS: Record<string, Handler> = {
 	'project.create': projectCreate,
 	'project.open': projectOpen,
 	'project.export': projectExport,
+	'project.import': projectImport,
 	'document.current': documentCurrent,
 	'document.source.get': documentSourceGet,
 	'document.source.roundtrip': documentSourceRoundtrip,

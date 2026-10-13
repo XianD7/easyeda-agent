@@ -60,34 +60,8 @@ func writeProjectArchive(value map[string]any, out string) (map[string]any, erro
 	if !ok || size != float64(len(data)) || len(data) == 0 || len(data) > projectArchiveLimit || value["format"] != "epro2" {
 		return nil, fmt.Errorf("invalid project archive size/format")
 	}
-	// Validate the native ZIP container and CRCs before delivering a file. Do not
-	// extract user-controlled paths. Bound expanded data to avoid archive bombs.
-	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return nil, fmt.Errorf("invalid native project ZIP: %w", err)
-	}
-	var expanded uint64
-	native := false
-	for _, f := range z.File {
-		if f.UncompressedSize64 > 128*1024*1024-expanded {
-			return nil, fmt.Errorf("project archive expanded size exceeds 128 MiB")
-		}
-		expanded += f.UncompressedSize64
-		if strings.HasSuffix(strings.ToLower(f.Name), ".epru") {
-			native = true
-		}
-		r, e := f.Open()
-		if e != nil {
-			return nil, e
-		}
-		_, e = io.Copy(io.Discard, io.LimitReader(r, int64(f.UncompressedSize64)+1))
-		r.Close()
-		if e != nil {
-			return nil, fmt.Errorf("project ZIP integrity: %w", e)
-		}
-	}
-	if !native {
-		return nil, fmt.Errorf("native epro2 archive contains no epru project data")
+	if err = validateProjectZip(data, true); err != nil {
+		return nil, err
 	}
 	if err = os.MkdirAll(filepath.Dir(out), 0755); err != nil {
 		return nil, err
@@ -109,6 +83,100 @@ func writeProjectArchive(value map[string]any, out string) (map[string]any, erro
 		return nil, err
 	}
 	return map[string]any{"uuid": value["uuid"], "format": "epro2", "path": absolute, "bytes": len(data), "sha256": fmt.Sprintf("%x", sha256.Sum256(data)), "zipIntegrityVerified": true, "restoreVerified": false}, nil
+}
+
+// validateProjectZip checks the ZIP container and CRCs without extracting
+// user-controlled paths, bounding expanded data to avoid archive bombs.
+func validateProjectZip(data []byte, requireEpru bool) error {
+	z, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return fmt.Errorf("invalid native project ZIP: %w", err)
+	}
+	var expanded uint64
+	native := false
+	for _, f := range z.File {
+		if f.UncompressedSize64 > 128*1024*1024-expanded {
+			return fmt.Errorf("project archive expanded size exceeds 128 MiB")
+		}
+		expanded += f.UncompressedSize64
+		if strings.HasSuffix(strings.ToLower(f.Name), ".epru") {
+			native = true
+		}
+		r, e := f.Open()
+		if e != nil {
+			return e
+		}
+		_, e = io.Copy(io.Discard, io.LimitReader(r, int64(f.UncompressedSize64)+1))
+		r.Close()
+		if e != nil {
+			return fmt.Errorf("project ZIP integrity: %w", e)
+		}
+	}
+	if requireEpru && !native {
+		return fmt.Errorf("native epro2 archive contains no epru project data")
+	}
+	return nil
+}
+
+func newProjectImportCmd(cfg *appConfig, window *string, stdout io.Writer) *cobra.Command {
+	var file, name, team string
+	var extract bool
+	c := &cobra.Command{Use: "import", Short: "Import a native project archive as a NEW project (@beta importer; never overwrites)",
+		Long: `Import an EasyEDA Pro project archive (.epro2, .epro, or a .zip packaging) as a new
+project through the official @beta importer. The command never writes into an
+existing project and does not open the result. The archive is checked for ZIP
+integrity first; .epro2 must contain .epru data. Import success proves only
+that a project was created: open it and read back schematic, PCB and DRC.
+A timeout leaves the outcome unknown; run 'easyeda project find' before retrying.`,
+		Example: `  easyeda project import --window <id> --file design.epro2 --name blink-import`,
+		Args:    cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(*window) == "" || strings.TrimSpace(name) == "" {
+				return fmt.Errorf("explicit --window and --name are required")
+			}
+			if cfg.project != "" || cfg.doc != "" {
+				return fmt.Errorf("project import uses --window; omit global --project/--doc routing")
+			}
+			ext := strings.ToLower(filepath.Ext(file))
+			if ext != ".epro2" && ext != ".epro" && ext != ".zip" {
+				return fmt.Errorf("--file must be an .epro2, .epro or .zip archive")
+			}
+			info, err := os.Stat(file)
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > projectArchiveLimit {
+				return fmt.Errorf("--file must be a regular file of 1 byte to 16 MiB")
+			}
+			data, err := os.ReadFile(file)
+			if err != nil {
+				return err
+			}
+			if err = validateProjectZip(data, ext == ".epro2"); err != nil {
+				return err
+			}
+			payload := map[string]any{"fileName": filepath.Base(file), "base64": base64.StdEncoding.EncodeToString(data), "friendlyName": name}
+			if team != "" {
+				payload["teamUuid"] = team
+			}
+			if extract {
+				payload["importOption"] = "ImportDocumentExtractLibraries"
+			}
+			res, err := requestActionTimed(cfg, "project.import", *window, payload, 150*time.Second)
+			if err != nil {
+				return err
+			}
+			if uuid, _ := res.Result["uuid"].(string); uuid == "" {
+				return fmt.Errorf("project import returned no project identity")
+			}
+			res.Result["sourceSha256"] = fmt.Sprintf("%x", sha256.Sum256(data))
+			res.Result["sourcePath"] = file
+			return encodeResultEnvelope(res, res.Result, stdout)
+		}}
+	c.Flags().StringVar(&file, "file", "", "project archive to import (required)")
+	c.Flags().StringVar(&name, "name", "", "friendly name of the new project (required)")
+	c.Flags().StringVar(&team, "team-uuid", "", "owner team UUID (default: active project's team)")
+	c.Flags().BoolVar(&extract, "extract-libraries", false, "also extract embedded libraries into the team library")
+	return c
 }
 
 func newProjectExportCmd(cfg *appConfig, window *string, stdout io.Writer) *cobra.Command {
