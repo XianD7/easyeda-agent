@@ -136,3 +136,54 @@ func chipAntennaKeepoutRect(minX, minY, maxX, maxY, margin float64) (x0, y0, x1,
 	}
 	return minX - margin, minY - margin, maxX + margin, maxY + margin, true
 }
+
+// antennaEdgeTolMil is how close the antenna end must sit to the board edge to
+// count as "antenna at the board edge" (the placement Espressif recommends).
+const antennaEdgeTolMil = 60.0
+
+// antennaEdgeSpan widens a module's pad-free antenna strip across the whole
+// board when that antenna end sits on a board edge: copper beside the antenna
+// detunes it just like copper under it, and with the module on the edge the
+// whole strip band of the board is the antenna's clearance. A module antenna in
+// mid-board keeps the module-width strip (a board-wide band there would wall off
+// routing; that layout is a design decision, not something to infer).
+// Live 2026-10-13: a 220 mil board strip beside the antenna was left pourable.
+func antennaEdgeSpan(rect [4]float64, bb layoutBBox, board *layoutBBox) [4]float64 {
+	if board == nil {
+		return rect
+	}
+	near := func(a, b float64) bool { return math.Abs(a-b) <= antennaEdgeTolMil }
+	coversX := rect[0] <= bb.MinX && rect[2] >= bb.MaxX
+	coversY := rect[1] <= bb.MinY && rect[3] >= bb.MaxY
+	switch {
+	case coversX && !coversY && rect[3] >= bb.MaxY && near(bb.MaxY, board.MaxY), // strip at the top end, on the top edge
+		coversX && !coversY && rect[1] <= bb.MinY && near(bb.MinY, board.MinY): // bottom end, bottom edge
+		rect[0], rect[2] = math.Min(rect[0], board.MinX), math.Max(rect[2], board.MaxX)
+	case coversY && !coversX && rect[2] >= bb.MaxX && near(bb.MaxX, board.MaxX), // right end, right edge
+		coversY && !coversX && rect[0] <= bb.MinX && near(bb.MinX, board.MinX): // left end, left edge
+		rect[1], rect[3] = math.Min(rect[1], board.MinY), math.Max(rect[3], board.MaxY)
+	}
+	return rect
+}
+
+// fetchAntennaBoardBBox reads the board outline center-line bbox for the
+// antenna rules (creation and pcb check share it). Unreadable or absent → nil,
+// which keeps the module-width strip and judges coverage over the full rect.
+func fetchAntennaBoardBBox(cfg *appConfig, window string) *layoutBBox {
+	ores, err := requestAction(cfg, "pcb.outline.get", window, nil)
+	if err != nil || ores == nil {
+		return nil
+	}
+	bb, ok := ores.Result["centerlineBBox"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	minX, ok1 := asFloatOK(bb["minX"])
+	minY, ok2 := asFloatOK(bb["minY"])
+	maxX, ok3 := asFloatOK(bb["maxX"])
+	maxY, ok4 := asFloatOK(bb["maxY"])
+	if !ok1 || !ok2 || !ok3 || !ok4 || maxX <= minX || maxY <= minY {
+		return nil
+	}
+	return &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
+}

@@ -124,18 +124,7 @@ func runPcbAntennaKeepout(cfg *appConfig, window string, opts pcbAntennaKeepoutO
 	// the on-board part of the planned rect (live 2026-10-13: the 20 mil outward
 	// margin crossed the edge and a board-wide keep-out never counted as cover).
 	// Unreadable outline → judge the full rect (conservative).
-	var board *layoutBBox
-	if ores, oerr := requestAction(cfg, "pcb.outline.get", window, nil); oerr == nil && ores != nil {
-		if bb, ok := ores.Result["centerlineBBox"].(map[string]any); ok {
-			minX, ok1 := asFloatOK(bb["minX"])
-			minY, ok2 := asFloatOK(bb["minY"])
-			maxX, ok3 := asFloatOK(bb["maxX"])
-			maxY, ok4 := asFloatOK(bb["maxY"])
-			if ok1 && ok2 && ok3 && ok4 && maxX > minX && maxY > minY {
-				board = &layoutBBox{MinX: minX, MinY: minY, MaxX: maxX, MaxY: maxY}
-			}
-		}
-	}
+	board := fetchAntennaBoardBBox(cfg, window)
 	for _, cm := range antennas {
 		device := resolveAntennaDevice(silkDev[asString(cm["primitiveId"])], cm)
 		desig := asString(cm["designator"])
@@ -179,6 +168,9 @@ func runPcbAntennaKeepout(cfg *appConfig, window string, opts pcbAntennaKeepoutO
 			return report(fmt.Errorf("antenna %s: cannot derive a pad-free strip (bbox/pads or explicit source parameters required)", desig))
 		}
 		rect := [4]float64{x0, y0, x1, y1}
+		if !chip {
+			rect = antennaEdgeSpan(rect, bb, board)
+		}
 		rules := antennaCommandRules(chip)
 		if len(antennaCoverageMissing(antennaOnBoardRect(rect, board), rules[:len(rules)-1], existing, int(layerCount))) == 0 {
 			skipped = append(skipped, map[string]any{"designator": desig, "reason": "already covered by complete polygon/rule/layer evidence"})

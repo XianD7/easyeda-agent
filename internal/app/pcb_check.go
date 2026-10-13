@@ -2329,6 +2329,8 @@ func fetchAntennaContext(cfg *appConfig, window string, silk []pcbSilkText) ([]p
 		return nil, nil, 0, fmt.Errorf("antenna depth declarations unavailable: %w", err)
 	}
 	var ants []pcbAntComp
+	var board *layoutBBox
+	boardRead := false
 	for _, raw := range components {
 		cm, ok := raw.(map[string]any)
 		if !ok {
@@ -2375,7 +2377,8 @@ func fetchAntennaContext(cfg *appConfig, window string, silk []pcbSilkText) ([]p
 		if ac.Incomplete == "" {
 			var x0, y0, x1, y1 float64
 			var ok bool
-			if isChipAntennaPart(device, bb.MaxX-bb.MinX, bb.MaxY-bb.MinY) {
+			chip := isChipAntennaPart(device, bb.MaxX-bb.MinX, bb.MaxY-bb.MinY)
+			if chip {
 				x0, y0, x1, y1, ok = chipAntennaKeepoutRect(bb.MinX, bb.MinY, bb.MaxX, bb.MaxY, 120)
 				// #129: no-wires would prohibit the chip antenna's own RF feed.
 				ac.RequiredRules = []int{6, 7}
@@ -2385,6 +2388,15 @@ func fetchAntennaContext(cfg *appConfig, window string, silk []pcbSilkText) ([]p
 			}
 			if ok {
 				rect := [4]float64{x0, y0, x1, y1}
+				// Same ruler as creation: edge-span a module antenna on the board
+				// edge, then judge coverage only over the on-board part.
+				if !boardRead {
+					board, boardRead = fetchAntennaBoardBBox(cfg, window), true
+				}
+				if !chip {
+					rect = antennaEdgeSpan(rect, bb, board)
+				}
+				rect = antennaOnBoardRect(rect, board)
 				ac.RequiredRect = &rect
 			} else {
 				ac.Incomplete = "cannot derive a pad-free antenna strip"

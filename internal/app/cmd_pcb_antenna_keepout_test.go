@@ -317,3 +317,27 @@ func TestAntennaOnBoardRectClipsCoverageToBoard(t *testing.T) {
 		t.Fatal("no overlap must keep the full rect, never an empty one")
 	}
 }
+
+func TestAntennaEdgeSpanWidensOnlyAnEdgeMountedAntenna(t *testing.T) {
+	// Demo 2026-10-13 geometry: WROOM-1 top (pad-free) end flush with the top edge.
+	bb := layoutBBox{MinX: 0, MinY: -1373, MaxX: 748, MaxY: -342.7}
+	strip := [4]float64{-20, -603, 768, -322.6}
+	board := &layoutBBox{MinX: -240, MinY: -1600, MaxX: 940, MaxY: -343}
+	if got := antennaEdgeSpan(strip, bb, board); got != [4]float64{-240, -603, 940, -322.6} {
+		t.Fatalf("edge-mounted antenna must span the board width, got %v", got)
+	}
+	mid := &layoutBBox{MinX: -240, MinY: -1600, MaxX: 940, MaxY: 400}
+	if got := antennaEdgeSpan(strip, bb, mid); got != strip {
+		t.Fatalf("mid-board antenna keeps the module-width strip, got %v", got)
+	}
+	if got := antennaEdgeSpan(strip, bb, nil); got != strip {
+		t.Fatal("unknown outline keeps the strip")
+	}
+	// Antenna pointing left, flush with the left edge: span the board height.
+	lb := layoutBBox{MinX: 100, MinY: 0, MaxX: 1130, MaxY: 748}
+	left := [4]float64{80, -20, 360, 768}
+	lboard := &layoutBBox{MinX: 100, MinY: -200, MaxX: 1500, MaxY: 900}
+	if got := antennaEdgeSpan(left, lb, lboard); got != [4]float64{80, -200, 360, 900} {
+		t.Fatalf("left-edge antenna must span the board height, got %v", got)
+	}
+}
