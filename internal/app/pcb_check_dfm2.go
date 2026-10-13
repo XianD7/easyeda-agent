@@ -71,8 +71,8 @@ func findSilkOverPad(silk []pcbSilkText, pads []pcbPadP) []pcbCheckFinding {
 	var out []pcbCheckFinding
 	for _, s := range silk {
 		txt := strings.TrimSpace(s.Text)
-		if txt == "" {
-			continue
+		if txt == "" || (s.Visible != nil && !*s.Visible) {
+			continue // hidden attributes keep stale anchors and are not printed
 		}
 		// Text box center (cx,cy) + half extents (hw,hh).
 		var cx, cy, hw, hh float64

@@ -213,3 +213,24 @@ func TestFindSilkOffBoardFlagsOnlyVisibleSilkOutsideTheOutline(t *testing.T) {
 		t.Fatalf("want only U1 flagged, got %+v", got)
 	}
 }
+
+func TestSilkOverPadReproducesDemoNeighbourLabelAndSkipsHiddenText(t *testing.T) {
+	yes, no := true, false
+	// Demo r1 (2026-10-13), measured: R1 centred at y -890 (0402 pads 22.3×21.3),
+	// C2's designator box 45 mil tall sitting just above C2 at y -970. layout-lint
+	// reported 0 overlap; the label touched R1's pads by ~3.4 mil.
+	pads := []pcbPadP{
+		{Designator: "R1", Number: "1", Layer: pcbSideTop, X: -137, Y: -890, W: 22.3, H: 21.3},
+		{Designator: "R1", Number: "2", Layer: pcbSideTop, X: -103, Y: -890, W: 22.3, H: 21.3},
+	}
+	visible := pcbSilkText{ID: "c2", Kind: "attribute", Key: "Designator", Text: "C2", Layer: silkTopLayer, Visible: &yes,
+		BBox: &pcbRect{MinX: -157.4, MinY: -942.3, MaxX: -104.2, MaxY: -897.3}}
+	if got := findSilkOverPad([]pcbSilkText{visible}, pads); len(got) != 1 || got[0].Designator != "R1" {
+		t.Fatalf("demo neighbour label must be reported on R1, got %+v", got)
+	}
+	hidden := visible
+	hidden.ID, hidden.Visible = "hidden-footprint", &no
+	if got := findSilkOverPad([]pcbSilkText{hidden}, pads); len(got) != 0 {
+		t.Fatalf("hidden attribute text is not printed and must not be judged, got %+v", got)
+	}
+}

@@ -338,6 +338,8 @@ func assertLiveLayoutCoverage(t *testing.T, result map[string]any, complete bool
 			response = result
 		case "pcb.outline.get":
 			response = map[string]any{"bbox": map[string]any{"minX": -100.0, "minY": -100.0, "maxX": 100.0, "maxY": 100.0}}
+		case "pcb.silk.list":
+			response = map[string]any{"texts": []any{}}
 		default:
 			t.Errorf("unexpected action %s", call.Action)
 		}

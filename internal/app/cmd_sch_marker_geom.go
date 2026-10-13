@@ -516,6 +516,7 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 			geo = append(geo, redundantNetMarkerFindings(comps, wires)...)
 			geo = append(geo, reversedNetFlagFindings(comps, wires)...)
 			geo = append(geo, schWireGeometryFindings(geometryResult.Result, wires)...)
+			geo = append(geo, sheetBoundaryFindings(comps, wires, sheetBBoxOf(comps), titleBlock, tbSource, overlapEps)...)
 		}
 	}
 
@@ -544,6 +545,8 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 			rep.Summary.DuplicateNetMarkers++
 		case "titleblock-overlap":
 			rep.Summary.TitleblockOverlaps++
+		case "out-of-sheet":
+			rep.Summary.OutOfSheet++
 		case "marker-overlap":
 			rep.Summary.MarkerOverlaps++
 		case "missing-partition", "missing-titleblock":

@@ -142,6 +142,13 @@ type pcbLayoutReport struct {
 	Overlaps       []pcbLFinding       `json:"overlaps"`
 	OutsideOutline []pcbLFinding       `json:"outsideOutline"`
 	TightPairs     []pcbLFinding       `json:"tightSpacing"`
+	// Silk is pcb check's own silk rules (silk-over-pad, silk-off-board) run on
+	// the same capture: designator placement is part of layout, and lint used to
+	// report 0 issues while labels sat on neighbours' pads or off the board
+	// (live 2026-10-13). WARN-level; never changes score or exit code.
+	Silk []pcbCheckFinding `json:"silk,omitempty"`
+	// SilkUnchecked names why the silk rules could not run (empty = they ran).
+	SilkUnchecked string `json:"silkUnchecked,omitempty"`
 	// AltFitStacks 是同网集堆叠对：两件焊盘数相同、非空网名多重集完全一致且
 	// 本体相交/贴住 —— 官方板的装配选项惯例（同位放两个 fit 选项只焊一个）或
 	// 刻意并联。同网集意味着**不可能**造成跨网短路，装配上也是有意为之，所以
@@ -909,6 +916,16 @@ func runPcbLayoutLint(cfg *appConfig, window string, minGapMil float64, asJSON b
 	rep.Coverage = pcbReadbackCoverage(res.Result, true)
 	rep.Incomplete = !rep.Coverage.Complete
 	finalizePcbLayoutReport(&rep)
+	if silk, serr := fetchPcbSilk(cfg, window); serr != nil {
+		rep.SilkUnchecked = serr.Error()
+	} else {
+		rep.Silk = findSilkOverPad(silk, snapshot.toCheckPads())
+		if outline != nil {
+			rep.Silk = append(rep.Silk, findSilkOffBoard(silk, pcbRect{MinX: outline.MinX, MinY: outline.MinY, MaxX: outline.MaxX, MaxY: outline.MaxY})...)
+		} else {
+			rep.SilkUnchecked = "silk-off-board not judged: board outline unavailable"
+		}
+	}
 
 	// Hand-solder iron-access check (issue #99): with a hand-solder profile the
 	// gate also requires every component to keep at least one clear entry side.
@@ -1007,6 +1024,12 @@ func renderLayoutGate(v routeGateVerdict, w io.Writer) {
 
 func renderPcbLayoutReport(rep pcbLayoutReport, w io.Writer) {
 	fmt.Fprintf(w, "PCB layout-lint: %s\n", rep.Summary)
+	for _, f := range rep.Silk {
+		fmt.Fprintf(w, "  WARN  %-12s %s\n", f.Type, f.Message)
+	}
+	if rep.SilkUnchecked != "" {
+		fmt.Fprintf(w, "  INFO  silk rules incomplete: %s\n", rep.SilkUnchecked)
+	}
 	if rep.Incomplete {
 		fmt.Fprintf(w, "  INCOMPLETE geometry: %s\n", strings.Join(rep.Coverage.Limitations, "; "))
 	}

@@ -284,6 +284,7 @@ ERROR，保留器件/引脚/线段证据。允许先向外再折线；不二次�
 缺 owner、缺实际几何或只用期望标记伪装读回都不能通过。无源 ownership 的裸 `check`
 不能证明外围语义归属；不得将它的零 findings 当作此项通过。
 
+`sch check` 的图纸边界规则对全部图元（器件、标识、导线）判 `out-of-sheet`（超出图纸可用区，ERROR），并把导线穿入图签区也计入 `titleblock-overlap`；与 `sch clusters`、`layout-lint` 共用同一图纸边框、可用区与图签 keep-out。
 `sch check` 同时读取现场分区矩形和自由文字的真实 bbox：旧框重合报
 `partition-overlap`；自由文字压器件/标记/其他自由文字报 `text-overlap`，
 文字跨分区边界报 `text-frame-crossing`；它们作为 `sch check` finding 返回具体对象。
