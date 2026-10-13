@@ -529,6 +529,7 @@ func mergeMarkerGeomFindingsWith(cfg *appConfig, window string, allPages bool, o
 		for _, pf := range partitionFinding(cfg, window, comps, stderr) {
 			geo = append(geo, *pf)
 		}
+		geo = append(geo, peripheralDirectFinding(cfg, window, comps, stderr)...)
 		// 图签是交付件:标题/设计者/板名空着,打印出来就是一张没人认领的图。
 		for _, tf := range titleBlockFinding(cfg, window, stderr) {
 			geo = append(geo, *tf)
