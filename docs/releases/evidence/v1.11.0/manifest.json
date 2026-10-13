@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 3,
+  "version": "v1.11.0",
+  "acceptanceScope": "cli-fixes",
+  "deferredScope": "full-design-e2e",
+  "deferredUntil": "follow-up",
+  "scopeDecision": {
+    "approvedBy": "user",
+    "version": "v1.11.0",
+    "date": "2026-10-14"
+  },
+  "result": "pass",
+  "independentReview": "pass",
+  "sha256": {
+    "test-report.md": "e87b0bfba0bebe4580ed686098d0af9d4153c768e403230559bbc20afb7e05a2",
+    "baseline.md": "f15b051f35af931716fa78662bd6184b0f1798bd2c2fe2b5dce93fe8b5533474",
+    "test-cases.md": "58956555ec088f660aa974bb1057125167b123acf1a9c3365aefb19aca335e93"
+  }
+}

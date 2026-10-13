@@ -1,4 +1,27 @@
-# v1.10.0 发布记录
+# v1.11.0 发布记录
+
+用户于 2026-10-14 选择按有限范围发布 v1.11.0。连接器运行时自 v1.10.0 起有改动（页面可见性、
+删除级联与显式 id、bridge-check 孤桩判据、导入空操作核验），按版本规则递增 minor；
+CLI/daemon、连接器和 Skill 统一为 1.11.0。
+
+## 版本范围
+
+- 原理图：外围实线直连门禁、页面边界统一检查、块 attach 贴脚成排、`compose` 状态与工程名统一。
+- PCB：导入默认不回填库属性（消除 DRC Netlist Error）、陈旧分区认领整表判废、天线禁铜整板宽、
+  `silk-off-board`、dump 语义哈希浮点归一、已同步导入判为核验通过的空操作。
+- 安全：删除必须显式 id、`page-delete` 回读判定、文档类型不符给出 `--doc` 提示。
+
+## 发布范围与状态
+
+候选产品源码为 dev 提交 `699d140`。[有限验收报告](evidence/v1.11.0/test-report.md) 通过 schema 3
+记录绑定本版本的用户范围决定；M1/F1/F2/E1/L1/N1/R1 在冻结候选上重新现场执行并经独立复核。
+ESP32-S3 最小点灯板已在开发过程中从原始需求跑到两层 PCB 布线完成、原生 DRC passed，但期间多次
+修改源码与热重载连接器，完整设计 E2E 记 in-progress，留待 follow-up。
+
+升级 CLI/Skill 使用 `easyeda update`；本版新增连接器动作字段，需重新导入 1.11.0 连接器 .eext。
+
+## v1.10.0 历史记录
+
 
 当前公开正式版为 [v1.10.0](https://github.com/zhoushoujianwork/easyeda-agent/releases/tag/v1.10.0)。
 用户已批准 v1.10.0，指示复用刚完成的验证并直接发布；本轮按明确的有限 CLI/工作流范围交付。

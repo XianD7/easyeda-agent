@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-14
+
 - `pcb.import_changes`：已同步的板子不弹确认框、导入接口直接返回 true 且器件清单不变时，判为已核验的空操作（新增 `noChanges:true`），不再按"未核验的部分导入"失败退出。
 - `schematic.primitives.delete` 支持 `cascade:true`：删除器件时连同其独占桩线与标识一起删除（与 component.delete 共用同一级联实现）；`sch prim-delete` 默认开启，`--no-cascade` 关闭。
 - `schematic.bridgeCheck` 不再把带网名的单脚桩线（`--kind net_label`，网名在导线 Name 属性上）误报为 ORPHAN。
@@ -9,6 +11,11 @@
 - 上下文（心跳与每个响应）新增 `pageVisibility`；EasyEDA 标签页隐藏时 `pcb.snapshot` 以 PRECONDITION_REFUSED 拒绝（画布不重绘，截图必然过期），原理图同步等待超时报错点明后台节流并给出修法。
 - `schematic.primitives.delete` 必须给出 `primitiveIds`，不再删除画布当前选中项（选中项可能是用户手动选的，且该路径绕过 CLI 图框守卫）；`sch prim-delete` 同步要求 `--ids`。
 - 移除从未调用、只服务于选中删除流程的 `schematic.select`（`sch select`）与 `view.fit_selection`（`view fit-selection`）。
+- CLI/Skill：`sch check` 按已登记模块用 compose 同一把尺核验外围实线直连（`peripheral-not-direct`，严格门禁失败），同名标签不再算直连；页面边界检查覆盖器件、标识与导线（`out-of-sheet`、导线穿图签）。
+- CLI：`pcb import-changes` 默认不再回填器件库属性（`--sync-attrs` 显式开启），原生 DRC 不再报原理图与 PCB 网表不一致；`sch page-delete` 以回读页列表判定成败，平台假成功不再被当成已删除。
+- CLI：`--project` 传工程 UUID 时与工程名共用同一份工作流状态，compose 登记的分组与分区框不再写丢；分区认领表点名本板没有的器件时整表判陈旧（`zone-claims-stale`），不再误报 zone-violation 或牵引摆件。
+- CLI：天线贴板边时禁铜区横跨整板宽度（生成与检查同尺）；`pcb check` 新增 `silk-off-board`、丝印压焊盘跳过隐藏文字；块 attach 外围贴脚成排、避开图签并留足标签通道；块内面对面两脚网直连导线；PCB dump 语义哈希做浮点归一，保存重载前后可比。
+- CLI：新增 `project import` 把原生工程归档导入为新工程；`lib search` 接受位置参数；审计条目记录发起调用的子命令；`sch connect` 默认沿引脚实测朝外方向出桩；文档类型不符的失败提示 `--doc` 而非误报连接器降级；删除未使用代码。
 
 ## [1.10.0] - 2026-10-11
 
