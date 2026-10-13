@@ -306,6 +306,31 @@ func bslAttachSeed(pinX, pinY float64, host layoutBBox, side string, ownHalf flo
 	}
 }
 
+// bslSnapOutward snaps a seed to the anchor grid in the direction of its side,
+// so snapping never moves it toward the host it must keep its gap from.
+func bslSnapOutward(x, y float64, side string) (float64, float64) {
+	g := float64(schAnchorGrid)
+	switch side {
+	case "up":
+		return snapAnchor(x), math.Ceil(y/g) * g
+	case "down":
+		return snapAnchor(x), math.Floor(y/g) * g
+	case "left":
+		return math.Floor(x/g) * g, snapAnchor(y)
+	case "right":
+		return math.Ceil(x/g) * g, snapAnchor(y)
+	}
+	return snapAnchor(x), snapAnchor(y)
+}
+
+// bslLateralHalf 是一支竖向桩上 marker 的横向半宽:标识本体的横向半宽与横排网名
+// 半宽取大。由 reach(桩长 + 六边形 + 名字,与 check/评分同一口径)反推名字宽,
+// 不另解析网名;下限是最宽的标识本体(地符号)。
+func bslLateralHalf(reach float64) float64 {
+	text := reach - schStubLen - acPortBodyLen
+	return math.Max(markerBBoxProfile("ground", "").Cross, text/2)
+}
+
 // bslPairPitch 是并列组的等距步长:成员实测宽度 + max(视觉间隙, 组内最大 marker
 // 伸出)。V5(组内同 part)保证这个宽度对全组通用 —— 这正是那条校验是 error
 // 而不是 warning 的原因。
@@ -412,12 +437,26 @@ func bslSolveAround(
 	//     落地都带一条 out-of-sheet(2026-08-15 esp32Mini E2E)。
 	//   - 件间:marker 之间的相互避让由 bslExpandForMarkers 的 lane 排布负责,在这里
 	//     再叠一层 reach 会让每个件互相推开两倍标签宽,布局散得不像人画的。
-	free := func(cx, cy float64, b layoutBBox, reach float64) bool {
+	// verticalRole marks attach parts solved vertical (markers hang off their
+	// ENDS). extentOf gives a role's marker extent per axis: a vertical part
+	// reaches its full marker length (stub + netport/name, the same acPortTotalLen
+	// ruler clusters judges with) up and down and only its marker width sideways;
+	// everything else keeps label width sideways and one label height vertically.
+	// Live 2026-10-13: a GND flag on a vertical C_EN printed 3 above the sheet.
+	verticalRole := map[string]bool{}
+	extentOf := func(role string) (h, v float64) {
+		r := reachOf(role)
+		if verticalRole[role] {
+			return bslLateralHalf(r), math.Max(bslMarkerVReach, r)
+		}
+		return r, bslMarkerVReach
+	}
+	free := func(cx, cy float64, b layoutBBox, reach, vreach float64) bool {
 		cand := layoutBBox{MinX: cx + b.MinX, MinY: cy + b.MinY, MaxX: cx + b.MaxX, MaxY: cy + b.MaxY}
 		if usable != nil {
 			withMarkers := layoutBBox{
-				MinX: cand.MinX - reach, MinY: cand.MinY - bslMarkerVReach,
-				MaxX: cand.MaxX + reach, MaxY: cand.MaxY + bslMarkerVReach,
+				MinX: cand.MinX - reach, MinY: cand.MinY - vreach,
+				MaxX: cand.MaxX + reach, MaxY: cand.MaxY + vreach,
 			}
 			if !boxInside(withMarkers, *usable) {
 				return false
@@ -439,13 +478,31 @@ func bslSolveAround(
 	// attach 永远在目标引脚的那一侧。躲不开就返回 false 交给调用方降级,不硬塞。
 	fitAlong := func(role string, seedX, seedY float64, dx, dy, step float64, tries int) (float64, float64, bool) {
 		b := boxOf(role)
-		reach := reachOf(role)
+		reach, vreach := extentOf(role)
 		for i := 0; i <= tries; i++ {
 			cx := snapAnchor(seedX + float64(i)*dx*step)
 			cy := snapAnchor(seedY + float64(i)*dy*step)
-			if free(cx, cy, b, reach) {
+			if free(cx, cy, b, reach, vreach) {
 				live = append(live, layoutBBox{MinX: cx + b.MinX, MinY: cy + b.MinY, MaxX: cx + b.MaxX, MaxY: cy + b.MaxY})
 				return cx, cy, true
+			}
+		}
+		return 0, 0, false
+	}
+
+	// fitNearestAlong searches x = seed ± k·step (k = 1..tries), preferring the
+	// first direction at equal distance; y stays pinned like fitAlong.
+	fitNearestAlong := func(role string, seedX, seedY, firstDir, step float64, tries int) (float64, float64, bool) {
+		b := boxOf(role)
+		reach, vreach := extentOf(role)
+		for k := 1; k <= tries; k++ {
+			for _, sgn := range []float64{firstDir, -firstDir} {
+				cx := snapAnchor(seedX + sgn*float64(k)*step)
+				cy := snapAnchor(seedY)
+				if free(cx, cy, b, reach, vreach) {
+					live = append(live, layoutBBox{MinX: cx + b.MinX, MinY: cy + b.MinY, MaxX: cx + b.MaxX, MaxY: cy + b.MaxY})
+					return cx, cy, true
+				}
 			}
 		}
 		return 0, 0, false
@@ -457,7 +514,31 @@ func bslSolveAround(
 	for r := range rel.Attach {
 		attachRoles = append(attachRoles, r)
 	}
-	sort.Strings(attachRoles)
+	// Place by target pin, left to right, so each pin's parts stay together in
+	// the row instead of interleaving by role name (live 2026-10-13: the 3V3
+	// decouplers and the EN RC alternated, and R_IO0 landed farthest from IO0).
+	pinX := func(role string) float64 {
+		if tRole, tPin, ok := splitBlockPinRef(rel.Attach[role]); ok && tRole == anchorRole {
+			if p, found := anchorPins[tPin]; found {
+				return p.X
+			}
+		}
+		return math.Inf(1)
+	}
+	// groupLast/groupDir: where the previous part of the same target pin landed
+	// and which way that pin's row is growing, so a pin's parts stay contiguous.
+	groupLast := map[string][2]float64{}
+	groupDir := map[string]float64{}
+	sort.SliceStable(attachRoles, func(i, j int) bool {
+		a, b := attachRoles[i], attachRoles[j]
+		if pa, pb := pinX(a), pinX(b); pa != pb {
+			return pa < pb
+		}
+		if ta, tb := rel.Attach[a], rel.Attach[b]; ta != tb {
+			return ta < tb
+		}
+		return a < b
+	})
 	for _, role := range attachRoles {
 		target := rel.Attach[role]
 		tRole, tPin, ok := splitBlockPinRef(target)
@@ -477,6 +558,7 @@ func bslSolveAround(
 			side = "right"
 		}
 		side, vertical := bslAttachSide(side, rel.Orient[role])
+		verticalRole[role] = vertical
 		// 上/下是**二选一的启发式**(走离引脚最近的那一头),不是电气语义 —— 所以首选
 		// 那头被占/顶出图纸时要回退到对侧,而不是直接降级走网格。降级不是中性的:
 		// 网格坐标由 planner 预先算好、**不避让刚落地的锚件**,大件必然重叠 → 落地前
@@ -492,7 +574,22 @@ func bslSolveAround(
 		fitted := false
 		hostCX := (anchorBBox.MinX + anchorBBox.MaxX) / 2
 		for _, sd := range sides {
-			sx, sy := bslAttachSeed(pin.X, pin.Y, anchorBBox, sd, tightHalf(role))
+			own := tightHalf(role)
+			if vertical && (sd == "up" || sd == "down") {
+				// A vertical part above/below the host has a marker on BOTH ends;
+				// the end facing the host needs its stub + marker lane too. Without
+				// it, the host-facing stub of a part sitting over the body runs into
+				// the body and the geometry guard rejects the connection (live
+				// 2026-10-13: C_VDD over U2, 3V3 never connected).
+				_, v := extentOf(role)
+				own += v
+			}
+			sx, sy := bslAttachSeed(pin.X, pin.Y, anchorBBox, sd, own)
+			// Snap the seed AWAY from the host: rounding to the grid could pull it
+			// back inside the required gap (live 2026-10-13: host top 660.5 put
+			// the seed 0.5 too close, every attach seed was rejected and the whole
+			// row spilled sideways).
+			sx, sy = bslSnapOutward(sx, sy, sd)
 			step := bslPartGap + 2*half(role)
 			reach := reachOf(role)
 			// 躲让方向 = 先继续远离引脚(始终待在该脚那一侧,贴脚语义不破),再**沿宿主
@@ -509,13 +606,51 @@ func bslSolveAround(
 				}
 				dirs = append(dirs, [2]float64{hx, 0}, [2]float64{-hx, 0})
 			}
-			for _, d := range dirs {
+			for di, d := range dirs {
 				// **躲让步长要容得下两件各自的 marker**,否则第二件贴着第一件落,
 				// 两个组框当场相接(clusters 判 tight:C4↔C6 间隙 0)。纵向让开
 				// 标签高度、横向让开标签宽度 —— 与判定同一把尺。
-				st := step + 2*bslMarkerVReach
+				_, vreach := extentOf(role)
+				st := step + 2*vreach
 				if d[1] == 0 {
 					st = step + 2*reach
+					if vertical {
+						// A vertical part's markers hang off its ENDS (up/down), so
+						// side-by-side it only needs its body or marker WIDTH, not the
+						// along-stub reach or the 50-unit planner margin. Live
+						// 2026-10-13: a 270 step threw the 100nF decoupler 540 units
+						// from the 3V3 pin it is declared to hug.
+						st = 2*math.Max(tightHalf(role), bslLateralHalf(reach)) + bslPartGap
+					}
+				}
+				if d[1] == 0 {
+					if di > 1 {
+						continue // both horizontal directions are handled below
+					}
+					// A follower of a pin already placed on this side grows that
+					// pin's row in the same direction, so the pin's parts stay
+					// contiguous. The first part of a pin takes the NEAREST free
+					// slot on either side (toward the host first at equal distance)
+					// instead of walking one way to the end of the row.
+					if last, ok := groupLast[target]; ok && last[1] == sy {
+						dir := groupDir[target]
+						if dir == 0 {
+							dir = d[0]
+						}
+						if fx, fy, ok := fitAlong(role, last[0]+dir*st, sy, dir, 0, st, 6); ok {
+							x, y, fitted = fx, fy, true
+							groupDir[target] = dir
+							break
+						}
+					}
+					if fx, fy, ok := fitNearestAlong(role, sx, sy, d[0], st, 6); ok {
+						x, y, fitted = fx, fy, true
+						if fx != sx {
+							groupDir[target] = math.Copysign(1, fx-sx)
+						}
+						break
+					}
+					continue
 				}
 				if fx, fy, ok := fitAlong(role, sx, sy, d[0], d[1], st, 6); ok {
 					x, y, fitted = fx, fy, true
@@ -531,6 +666,7 @@ func bslSolveAround(
 				role, target, strings.Join(sides, "/")))
 			continue
 		}
+		groupLast[target] = [2]float64{x, y}
 		rot := 0.0
 		if vertical {
 			rot = 270 // 竖放:pin1 朝上(电)、pin2 朝下(地),与 orientation 真值表一致
@@ -798,6 +934,12 @@ func bslResolveLive(cfg *appConfig, window string, plan *bapPlan, sheet *layoutB
 		usable = &layoutBBox{
 			MinX: sheet.MinX + sheetEdgeMinGap, MinY: sheet.MinY + sheetEdgeMinGap,
 			MaxX: sheet.MaxX - sheetEdgeMinGap, MaxY: sheet.MaxY - sheetEdgeMinGap,
+		}
+		// The title block is part of the sheet primitive (skipped above), so it
+		// was never an obstacle: parts landed on it (live 2026-10-13). Same
+		// keep-out sch check judges.
+		if tb, provisional := titleBlockKeepout(sheet); !provisional && tb != nil {
+			obstacles = append(obstacles, *tb)
 		}
 	}
 
