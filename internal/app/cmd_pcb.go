@@ -801,7 +801,7 @@ edits as a workaround because those change persistent design data.`,
 	// pcb.import_changes — the schematic→PCB bridge (components arrive here).
 	{
 		var schematicUUID string
-		var noEnsureBoard, noRecompute, noSyncAttrs, noSyncDesignators bool
+		var noEnsureBoard, noRecompute, syncAttrs, noSyncAttrs, noSyncDesignators bool
 		c := &cobra.Command{
 			Use:   "import-changes",
 			Short: "Sync the schematic netlist/components into the active PCB",
@@ -812,10 +812,12 @@ schematic and PCB first, then recomputes ratlines.
 
 The platform's import copies the top-level identity fields but leaves the
 otherProperty VALUES empty on the PCB side (Value/Voltage Rating/Tolerance/
-Datasheet/… all "") — blanking the 器件标准化 panel's columns. After a
-successful import this command therefore auto-runs the attrs sync
-(schematic pages → PCB, empty-value keys only); disable with --no-sync-attrs
-or re-run standalone via ` + "`easyeda pcb sync-attrs`" + `.
+Datasheet/… all "") — blanking the 器件标准化 panel's columns. Filling them is
+OPT-IN (--sync-attrs, or standalone ` + "`easyeda pcb sync-attrs`" + `): the
+library values exist only on the PCB side, so native DRC then reports
+"Netlist Error: PCB and schematic netlist does not match" (live 2026-10-13: the
+error came back after every default import and vanished with the backfill
+skipped). A clean schematic↔PCB DRC outranks filled BOM columns.
 
 After the attrs sync this command ALSO runs the designator repair
 (` + "`easyeda pcb sync-designators`" + `, matched by uniqueId — the one id both
@@ -855,7 +857,7 @@ write that resets them. Disable with --no-sync-designators.`,
 				// attrs 在前、位号在后：attrs_backfill 的 Designator 键泄漏 bug 已在
 				// 连接器根治，但位号回填殿后仍是第二道防线——任何整包 otherProperty
 				// 写入若再毁位号，殿后的回填都能当场修回。
-				if landed && !noSyncAttrs {
+				if landed && syncAttrs && !noSyncAttrs {
 					if err := syncSchAttrsToPcb(cfg, window, false, stderr); err != nil {
 						fmt.Fprintf(stderr, "⚠ attrs sync after import failed (import itself succeeded): %v — retry with `easyeda pcb sync-attrs`\n", err)
 					}
@@ -876,7 +878,9 @@ write that resets them. Disable with --no-sync-designators.`,
 		c.Flags().StringVar(&schematicUUID, "schematic", "", "source schematic UUID (default: the linked one)")
 		c.Flags().BoolVar(&noEnsureBoard, "no-ensure-board", false, "do not auto-create a Board link if missing")
 		c.Flags().BoolVar(&noRecompute, "no-recompute-ratline", false, "skip ratline recomputation")
-		c.Flags().BoolVar(&noSyncAttrs, "no-sync-attrs", false, "skip the automatic schematic→PCB attribute backfill after import")
+		c.Flags().BoolVar(&syncAttrs, "sync-attrs", false, "after import, backfill empty PCB attribute values from the device library (makes native DRC report a schematic↔PCB Netlist Error)")
+		c.Flags().BoolVar(&noSyncAttrs, "no-sync-attrs", false, "deprecated: the backfill is now opt-in (--sync-attrs)")
+		_ = c.Flags().MarkHidden("no-sync-attrs")
 		c.Flags().BoolVar(&noSyncDesignators, "no-sync-designators", false,
 			"skip the automatic designator repair after import (the platform leaves every\ndesignator as a U?/C? placeholder; see `easyeda pcb sync-designators`)")
 		pcb.AddCommand(c)
@@ -902,7 +906,11 @@ NOT a usable source either — its instance values are empty after save/reload
 too — so the device-library record (getByLcscIds via the instance's C-number,
 kept real by the #157 backfill) is the stable carrier. By default only keys
 whose PCB value is empty are filled (hand-edited PCB values win); --overwrite
-forces the library values. Parts without a C-number are skipped and reported.`,
+forces the library values. Parts without a C-number are skipped and reported.
+
+Cost: the values land on the PCB only, so native DRC reports "Netlist Error:
+PCB and schematic netlist does not match" until the next plain import-changes
+(live 2026-10-13). Run it for BOM/standardization output, not before a DRC gate.`,
 			Example: `  easyeda pcb sync-attrs
   easyeda pcb sync-attrs --overwrite`,
 			RunE: func(cmd *cobra.Command, args []string) error {
