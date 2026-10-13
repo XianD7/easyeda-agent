@@ -260,3 +260,9 @@ EasyEDA Pro project
 [MIT](LICENSE)。`extension/src/beautify/` 中移植自
 [Easy_EDA_PCB_Beautify](https://github.com/m-RNA/Easy_EDA_PCB_Beautify) 的文件沿用
 Apache-2.0，详见 [NOTICE](NOTICE)。
+
+## Star History
+
+感谢每一颗 star。
+
+[![Star History Chart](https://api.star-history.com/svg?repos=zhoushoujianwork/easyeda-agent&type=Date)](https://www.star-history.com/#zhoushoujianwork/easyeda-agent&Date)
