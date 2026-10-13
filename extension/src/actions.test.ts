@@ -2967,6 +2967,32 @@ test('component.delete: cascade:false keeps the old behavior (no wire/flag clean
 	}
 });
 
+test('primitives.delete: cascade:true removes a deleted part\'s own stub tree; default keeps internal callers unchanged', async () => {
+	// Live 2026-10-13: `sch prim-delete` on three resistors left four dangling
+	// stubs, because only component.delete cascaded. The CLI now sends cascade:true.
+	const scene = () => installComponentDeleteStub({
+		parts: [{ id: 'u1', designator: 'U1', pins: [[100, 100]] }],
+		flags: [{ id: 'f1', x: 100, y: 130 }],
+		wires: [{ id: 'w1', points: [100, 100, 100, 130] }],
+	});
+	let fx = scene();
+	try {
+		const res: any = await runAction('schematic.primitives.delete', { primitiveIds: ['u1'], cascade: true });
+		assert.deepEqual(res.result.cascaded, { wires: ['w1'], flags: ['f1'] });
+		assert.deepEqual(fx.liveWireIds(), []);
+		assert.deepEqual(fx.liveFlagIds(), []);
+	}
+	finally { delete (globalThis as any).eda; }
+	fx = scene();
+	try {
+		const res: any = await runAction('schematic.primitives.delete', { primitiveIds: ['u1'] });
+		assert.equal(res.result.cascaded, undefined, 'internal callers (no cascade flag) keep the old semantics');
+		assert.deepEqual(fx.liveWireIds(), ['w1']);
+		assert.deepEqual(fx.liveFlagIds(), ['f1']);
+	}
+	finally { delete (globalThis as any).eda; }
+});
+
 test('component.delete: unknown main deletion never cascades into a live stub', async t => {
 	const fx = installComponentDeleteStub({ parts: [{ id: 'u1', designator: 'U1', pins: [[100, 100]] }],
 		flags: [{ id: 'f1', x: 100, y: 130 }], wires: [{ id: 'w1', points: [100, 100, 100, 130] }] });

@@ -2054,6 +2054,61 @@ export function planSchDeleteCascadeTrees(
 /** Read everything the cascade planner needs BEFORE the components are deleted
  *  (their pins vanish with them). Throws on read failure — the caller treats
  *  that as "skip the cascade with a warning", never as "block the delete". */
+/**
+ * Execute a planned delete cascade (ADR-0004 Decision 5): remove the stub trees
+ * and riding flags of components that are PROVEN deleted. Trees touching a
+ * surviving component are skipped (deleting them would disconnect a live part).
+ * The canvas already changed, so failures degrade to warnings + notApplied and
+ * never throw (#151). `alreadyHandled` ids (deleted explicitly by the caller)
+ * are not deleted twice.
+ */
+async function executeSchDeleteCascade(
+	plannedTrees: Array<SchDeleteCascadeTree>,
+	removed: Array<string>,
+	deleteContext: Awaited<ReturnType<typeof captureSchDeletionContext>>,
+	alreadyHandled: Set<string> = new Set(),
+): Promise<{ cascaded: { wires: Array<string>; flags: Array<string> }; notApplied: Array<{ kind: string; id: string }>; warnings: Array<string>; unverified: Record<string, Array<string>> }> {
+	const warnings: Array<string> = [];
+	const notApplied: Array<{ kind: string; id: string }> = [];
+	const removedSet = new Set(removed);
+	const wireIds: Array<string> = [];
+	const flagIds: Array<string> = [];
+	for (const tree of plannedTrees) {
+		if (tree.ownerIds.some(id => !removedSet.has(id))) {
+			warnings.push(`cascade skipped a stub tree (${tree.wireIds.join(', ')}): component deletion was not verified`);
+			continue;
+		}
+		wireIds.push(...tree.wireIds.filter(id => !alreadyHandled.has(id)));
+		flagIds.push(...tree.flagIds.filter(id => !alreadyHandled.has(id)));
+	}
+	if (!wireIds.length && !flagIds.length) return { cascaded: { wires: [], flags: [] }, notApplied, warnings, unverified: {} };
+	try {
+		await assertSchDeletionContext(deleteContext);
+		if (wireIds.length) await deleteSchGroup('wires', wireIds, deleteContext);
+		if (flagIds.length) await deleteSchGroup('components', flagIds, deleteContext);
+	}
+	catch (err) {
+		warnings.push(warnText('cascade delete failed', err));
+	}
+	// Read back: only proven-removed ids are claimed; survivors are
+	// structured notApplied (the platform's delete lies — SCH_DELETE_BATCH).
+	const check = await verifySchPrimitiveDeletion({ wires: wireIds, components: flagIds }, deleteContext);
+	warnings.push(...check.warnings);
+	const wiresLeft = new Set([...(check.survived.wires ?? []), ...(check.unverified.wires ?? [])]);
+	const flagsLeft = new Set([...(check.survived.components ?? []), ...(check.unverified.components ?? [])]);
+	notApplied.push(
+		...[...wiresLeft].map(id => ({ kind: 'wire', id })),
+		...[...flagsLeft].map(id => ({ kind: 'flag', id })),
+	);
+	if (notApplied.length) {
+		warnings.push(
+			`cascade cleanup: ${notApplied.length} primitive(s) not verified deleted `
+			+ `(${notApplied.map(n => `${n.kind}:${n.id}`).join(', ')}) — re-read before assuming they are gone.`,
+		);
+	}
+	return { cascaded: { wires: check.deleted.wires ?? [], flags: check.deleted.components ?? [] }, notApplied, warnings, unverified: check.unverified };
+}
+
 async function collectSchDeleteCascadePlan(ids: Array<string>): Promise<Array<SchDeleteCascadeTree>> {
 	const idSet = new Set(ids);
 	const components = await eda.sch_PrimitiveComponent.getAll();
@@ -2150,53 +2205,11 @@ const schematicComponentDelete: Handler = async (payload) => {
 	let cascaded: { wires: Array<string>; flags: Array<string> } | undefined;
 	const notApplied: Array<{ kind: string; id: string }> = [];
 	if (cascade) {
-		const removedSet = new Set(removed);
-		const wireIds: Array<string> = [];
-		const flagIds: Array<string> = [];
-		for (const tree of plannedTrees) {
-			if (tree.ownerIds.some(id => !removedSet.has(id))) {
-				warnings.push(`cascade skipped a stub tree (${tree.wireIds.join(', ')}): component deletion was not verified`);
-				continue;
-			}
-			wireIds.push(...tree.wireIds);
-			flagIds.push(...tree.flagIds);
-		}
-		if (wireIds.length || flagIds.length) {
-			// The canvas already changed (components are gone) — a cascade failure
-			// must degrade to warnings + notApplied, never throw (#151).
-			try {
-				await assertSchDeletionContext(deleteContext);
-				if (wireIds.length) await deleteSchGroup('wires', wireIds, deleteContext);
-				if (flagIds.length) await deleteSchGroup('components', flagIds, deleteContext);
-			}
-			catch (err) {
-				warnings.push(warnText('cascade delete failed', err));
-			}
-			// Read back: only proven-removed ids are claimed; survivors are
-			// structured notApplied (the platform's delete lies — SCH_DELETE_BATCH).
-			const check = await verifySchPrimitiveDeletion({ wires: wireIds, components: flagIds }, deleteContext);
-			warnings.push(...check.warnings);
-			Object.assign(cascadeUnverified, check.unverified);
-			const wiresLeft = new Set([...(check.survived.wires ?? []), ...(check.unverified.wires ?? [])]);
-			const flagsLeft = new Set([...(check.survived.components ?? []), ...(check.unverified.components ?? [])]);
-			cascaded = {
-				wires: check.deleted.wires ?? [],
-				flags: check.deleted.components ?? [],
-			};
-			notApplied.push(
-				...[...wiresLeft].map(id => ({ kind: 'wire', id })),
-				...[...flagsLeft].map(id => ({ kind: 'flag', id })),
-			);
-			if (notApplied.length) {
-				warnings.push(
-					`cascade cleanup: ${notApplied.length} primitive(s) not verified deleted `
-					+ `(${notApplied.map(n => `${n.kind}:${n.id}`).join(', ')}) — re-read before assuming they are gone.`,
-				);
-			}
-		}
-		else {
-			cascaded = { wires: [], flags: [] };
-		}
+		const done = await executeSchDeleteCascade(plannedTrees, removed, deleteContext);
+		cascaded = done.cascaded;
+		notApplied.push(...done.notApplied);
+		warnings.push(...done.warnings);
+		Object.assign(cascadeUnverified, done.unverified);
 	}
 
 	return {
@@ -2935,6 +2948,17 @@ const schematicPrimitivesDelete: Handler = async (payload) => {
 	}
 
 	const warnings: Array<string> = [];
+	// Opt-in cascade (`cascade:true`, set by `sch prim-delete`): a deleted part
+	// takes its exclusive stub trees + riding flags with it, exactly like
+	// schematic.component.delete. Opt-in because internal callers (move kernel,
+	// zone-arrange, autoconnect repair) manage whole trees themselves.
+	// Live 2026-10-13: deleting three resistors left four dangling stubs.
+	const cascade = optionalBoolean(payload, 'cascade') === true;
+	let plannedTrees: Array<SchDeleteCascadeTree> = [];
+	if (cascade && idsByKey.components?.length) {
+		try { plannedTrees = await collectSchDeleteCascadePlan(idsByKey.components); }
+		catch (err) { warnings.push(warnText('cascade cleanup skipped (could not read the scene before deleting)', err)); }
+	}
 	for (const [key, ids] of Object.entries(idsByKey)) {
 		if (!ids.length) continue;
 		try {
@@ -2976,6 +3000,11 @@ const schematicPrimitivesDelete: Handler = async (payload) => {
 	const survived = Object.fromEntries(
 		Object.entries(survivedByKey).filter(([, ids]) => ids.length),
 	);
+	let cascadeResult: Awaited<ReturnType<typeof executeSchDeleteCascade>> | undefined;
+	if (cascade) {
+		cascadeResult = await executeSchDeleteCascade(plannedTrees, verification.deleted.components ?? [], deleteContext, new Set(targets));
+		warnings.push(...cascadeResult.warnings);
+	}
 	if (survivedTotal) {
 		warnings.push(
 			`${survivedTotal} primitive(s) survived the delete and are still on the page `
@@ -2996,6 +3025,9 @@ const schematicPrimitivesDelete: Handler = async (payload) => {
 			deletedIds,
 			...(survivedTotal ? { partial: true, survived, survivedTotal } : {}),
 			...(Object.keys(verification.unverified).length ? { partial: true, verified: false, unverified: verification.unverified } : {}),
+			...(cascadeResult ? { cascaded: cascadeResult.cascaded } : {}),
+			...(cascadeResult?.notApplied.length ? { partial: true, notApplied: cascadeResult.notApplied } : {}),
+			...(cascadeResult && Object.keys(cascadeResult.unverified).length ? { verified: false, cascadeUnverified: cascadeResult.unverified } : {}),
 			...(notFound.length ? { notFound } : {}),
 			...(warnings.length ? { warnings } : {}),
 		},

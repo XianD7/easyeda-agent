@@ -1006,12 +1006,14 @@ NOT line up — re-wire the affected pins, then run ` + "`easyeda sch drc`" + ` 
 	// type coverage was a real agent trap.
 	{
 		var idsRaw string
-		var allowSheet bool
+		var allowSheet, noCascade bool
 		c := &cobra.Command{
 			Use:     "prim-delete",
 			Short:   "Delete schematic primitives of ANY type by explicit id",
 			Args:    cobra.NoArgs,
-			Example: `  easyeda sch prim-delete --ids id1,id2   # delete these (any primitive type)`,
+			Example: `  easyeda sch prim-delete --ids id1,id2   # delete these (any primitive type)
+  easyeda sch prim-delete --ids <partId>  # a deleted part takes its own stub wires/flags with it
+  easyeda sch prim-delete --ids <partId> --no-cascade`,
 			RunE: func(cmd *cobra.Command, args []string) error {
 				// No implicit "delete the current selection": the canvas
 				// selection may be the user's, and that path skipped the sheet
@@ -1019,7 +1021,9 @@ NOT line up — re-wire the affected pins, then run ` + "`easyeda sch drc`" + ` 
 				if idsRaw == "" {
 					return fmt.Errorf("--ids is required (deleting the canvas selection is not supported)")
 				}
-				payload := map[string]any{}
+				// A deleted part takes its exclusive stub trees + riding flags with
+				// it (ADR-0004 Decision 5), as schematic.component.delete does.
+				payload := map[string]any{"cascade": !noCascade}
 				var cascadePlan map[string]string // primitiveId → group-member designator
 				{
 					ids, err := parseIDList(idsRaw)
@@ -1080,6 +1084,7 @@ NOT line up — re-wire the affected pins, then run ` + "`easyeda sch drc`" + ` 
 			},
 		}
 		c.Flags().StringVar(&idsRaw, "ids", "", "primitive IDs to delete (any type) — CSV: id1,id2 (required)")
+		c.Flags().BoolVar(&noCascade, "no-cascade", false, "keep the deleted parts' own stub wires and flags (default: they are removed with the part)")
 		c.Flags().BoolVar(&allowSheet, "allow-sheet", false, "allow deleting sheet/图框 primitives (blocked by default — a deleted sheet cannot be recreated via API)")
 		sch.AddCommand(c)
 	}

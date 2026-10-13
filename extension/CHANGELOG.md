@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- `schematic.primitives.delete` 支持 `cascade:true`：删除器件时连同其独占桩线与标识一起删除（与 component.delete 共用同一级联实现）；`sch prim-delete` 默认开启，`--no-cascade` 关闭。
 - `schematic.bridgeCheck` 不再把带网名的单脚桩线（`--kind net_label`，网名在导线 Name 属性上）误报为 ORPHAN。
 - PCB 布局操作（align/distribute/grid_snap/components.move/components.arrange）必须给 `primitiveIds`，不再回退到画布选中项。
 - 上下文（心跳与每个响应）新增 `pageVisibility`；EasyEDA 标签页隐藏时 `pcb.snapshot` 以 PRECONDITION_REFUSED 拒绝（画布不重绘，截图必然过期），原理图同步等待超时报错点明后台节流并给出修法。
