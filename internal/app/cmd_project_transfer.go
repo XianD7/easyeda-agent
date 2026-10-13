@@ -163,7 +163,9 @@ A timeout leaves the outcome unknown; run 'easyeda project find' before retrying
 			}
 			res, err := requestActionTimed(cfg, "project.import", *window, payload, 150*time.Second)
 			if err != nil {
-				return err
+				// The host may open the new project and reload the page mid-call
+				// (live 4.1.71), dropping the connector before it responds.
+				return fmt.Errorf("%w; outcome unknown: run `easyeda project find --name %q` before retrying", err, name)
 			}
 			if uuid, _ := res.Result["uuid"].(string); uuid == "" {
 				return fmt.Errorf("project import returned no project identity")

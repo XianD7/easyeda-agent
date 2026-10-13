@@ -154,7 +154,11 @@ PNG/JPEG 转制造丝印需要人工调节图稿，本工具不实现这项自�
 
 本项目若增加该输出路径，它应消费已有 canonical 连接与参数化几何，并维护稳定身份映射，
 而不是让另一套脚本重新定义网络和布局。该适配器当前为 `planned`，官方脚本的离线测试不
-证明本项目已支持它，也不改变现行 Web EDA / typed action 的现场操作约束。调研见
+证明本项目已支持它，也不改变现行 Web EDA / typed action 的现场操作约束。
+2026-10-13 Web 4.1.71 现场：`.eprj3` 文件夹打包成 ZIP 直接交给 `project import` 不被接受；把其文档
+重新封装为 `project2.json` + 单个 `.epru` 后可导入为新工程，原理图与 PCB 记录可回读并运行 DRC。
+官方 blink 样例导入后报 Netlist Error，因为源文件里原理图导线无网名、PCB 网络另行写入：
+SCH/PCB 一致性必须由生成端保证，导入与 DRC 只负责暴露问题。调研见
 [官方 eprj3 Skill](ecosystem-survey.md#12-官方-eprj3-skill离线工程生成路线2026-09-21源码与离线实测)。
 
 Web 文档源码探针先区分两件事：`getDocumentSource` 读取宿主原始文本；同源 roundtrip
