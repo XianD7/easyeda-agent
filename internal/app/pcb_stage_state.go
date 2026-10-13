@@ -71,7 +71,7 @@ func checkRouteGate(s *pcbStageState, force, forceUnsafe bool, reason string) ro
 // the explicit --project when given, else the live window's project identity.
 func resolveStageProject(cfg *appConfig, window string) (string, error) {
 	if strings.TrimSpace(cfg.project) != "" {
-		return cfg.project, nil
+		return stageKeyForTyped(cfg, window), nil
 	}
 	key, _, err := resolveStageIdentityLive(cfg, window)
 	return key, err
@@ -96,15 +96,34 @@ func resolveStageProject(cfg *appConfig, window string) (string, error) {
 // keep using resolveStageProject and fall back to State.ProjectUUID for scoping.
 func resolveStageIdentity(cfg *appConfig, window string) (key, uuid string, err error) {
 	if strings.TrimSpace(cfg.project) != "" {
-		_, live, lerr := resolveStageIdentityLive(cfg, window)
+		name, live, lerr := resolveStageIdentityLive(cfg, window)
 		if lerr != nil {
 			// The typed name is authoritative for the key; an unreachable window
 			// only costs us the uuid.
 			return cfg.project, "", nil
 		}
+		if strings.EqualFold(strings.TrimSpace(cfg.project), live) && name != "" {
+			return name, live, nil // typed the uuid: same project, same state file
+		}
 		return cfg.project, live, nil
 	}
 	return resolveStageIdentityLive(cfg, window)
+}
+
+// stageKeyForTyped keys state for an explicit --project. A typed project UUID
+// (guarded compose/apply queues pin the uuid) maps to the live project's name so
+// it shares the file that `--project <name>` uses — live 2026-10-13 the compose
+// queue registered its groups/frames in <uuid>.json while sch check read
+// ceshi.json and reported "5 modules, 4 frames". Names pass through untouched.
+func stageKeyForTyped(cfg *appConfig, window string) string {
+	typed := strings.TrimSpace(cfg.project)
+	if !isHex32(typed) {
+		return cfg.project
+	}
+	if name, live, err := resolveStageIdentityLive(cfg, window); err == nil && name != "" && strings.EqualFold(typed, live) {
+		return name
+	}
+	return cfg.project
 }
 
 // resolveStageIdentityLive asks the window who it is (name + uuid).
@@ -383,4 +402,17 @@ func unclaimedParts(live []string, claimed map[string]int) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// isHex32 reports an EasyEDA project uuid shape (32 hex characters).
+func isHex32(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, r := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", r) {
+			return false
+		}
+	}
+	return true
 }
