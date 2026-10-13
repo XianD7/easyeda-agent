@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- 上下文（心跳与每个响应）新增 `pageVisibility`；EasyEDA 标签页隐藏时 `pcb.snapshot` 以 PRECONDITION_REFUSED 拒绝（画布不重绘，截图必然过期），原理图同步等待超时报错点明后台节流并给出修法。
 - `schematic.primitives.delete` 必须给出 `primitiveIds`，不再删除画布当前选中项（选中项可能是用户手动选的，且该路径绕过 CLI 图框守卫）；`sch prim-delete` 同步要求 `--ids`。
 - 移除从未调用、只服务于选中删除流程的 `schematic.select`（`sch select`）与 `view.fit_selection`（`view fit-selection`）。
 

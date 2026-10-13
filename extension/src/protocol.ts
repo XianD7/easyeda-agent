@@ -72,6 +72,7 @@ export interface ContextFrame {
 	documentType?: string;
 	tabId?: string;
 	unit?: string;
+	pageVisibility?: string;
 }
 
 export interface ResponseContext {
@@ -81,6 +82,8 @@ export interface ResponseContext {
 	documentType?: string;
 	tabId?: string;
 	unit?: string;
+	/** Host page document.visibilityState; "hidden" throttles timers and stops canvas repaint. */
+	pageVisibility?: string;
 }
 
 export interface ResponseArtifact {

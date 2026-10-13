@@ -1,5 +1,6 @@
 /// <reference types="@jlceda/pro-api-types" />
 import { armDeadline } from './deadlines';
+import { pageVisibility } from './eda-context';
 import { ActionError, ErrorCodes } from './protocol';
 
 export class SchematicReadinessError extends ActionError {}
@@ -68,6 +69,18 @@ export function assertSchematicReadinessContext(context: SchematicContext, token
 	}
 }
 
+/**
+ * Timeout error for the readiness wait. A hidden tab throttles timers and host
+ * sync, which is the usual cause; name it so the caller fixes visibility
+ * instead of retrying writes.
+ */
+function readinessTimeout(): SchematicReadinessError {
+	const hidden = pageVisibility() === 'hidden';
+	return new SchematicReadinessError(ErrorCodes.INVALID_STATE, hidden
+		? 'Timed out waiting for schematic RealTimeSync while the EasyEDA tab is hidden (background tabs throttle timers and host sync); bring the EasyEDA tab to the foreground, then read back before any further write.'
+		: 'Timed out waiting for schematic RealTimeSync; no further writes are allowed.');
+}
+
 /** Wait on observed RealTimeSync state, never on an assumed fixed settling delay. */
 export async function waitForSchematicReady(context: SchematicContext, timeoutMs = 5000, captured = captureSchematicReadiness(context)): Promise<void> {
 	const expiresAt = Date.now() + timeoutMs;
@@ -81,14 +94,12 @@ export async function waitForSchematicReady(context: SchematicContext, timeoutMs
 			poll?.cancel();
 			if (error) reject(error); else resolve();
 		};
-		const deadline = armDeadline(timeoutMs, () => finish(new SchematicReadinessError(
-			ErrorCodes.INVALID_STATE, 'Timed out waiting for schematic RealTimeSync; no further writes are allowed.',
-		)));
+		const deadline = armDeadline(timeoutMs, () => finish(readinessTimeout()));
 		const check = async (): Promise<void> => {
 			try {
 				const current = await eda.dmt_SelectControl.getCurrentDocumentInfo();
 				if (settled) return; // A late identity response must never resume a timed-out wait.
-				if (Date.now() >= expiresAt) throw new SchematicReadinessError(ErrorCodes.INVALID_STATE, 'Timed out waiting for schematic RealTimeSync; no further writes are allowed.');
+				if (Date.now() >= expiresAt) throw readinessTimeout();
 				if (current?.uuid !== context.uuid || current.tabId !== context.tabId) {
 					throw new SchematicReadinessError(ErrorCodes.INVALID_STATE, 'Schematic document identity changed while waiting for readiness.');
 				}

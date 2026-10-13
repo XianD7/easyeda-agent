@@ -16,7 +16,7 @@ import { armDeadline } from './deadlines';
 import { exactJSON, preservedInstance } from './preserve-instance';
 import { barePcbRuleConfiguration, pcbRulesEqual, planPcbConfig } from './pcb-config';
 import { pcbNetColorSet } from './pcb-net-color';
-import { documentTypeLabel, mutationContextError, readResponseContext } from './eda-context';
+import { documentTypeLabel, mutationContextError, pageVisibility, readResponseContext } from './eda-context';
 import { getSchematicNetlistFile, NetlistContextError } from './schematic-netlist-file';
 import { renameSchematicPage } from './schematic-page-rename';
 import { assertSchematicReadinessContext, captureSchematicReadiness, SchematicReadinessError, SchematicReadinessToken, waitForSchematicReady } from './schematic-readiness';
@@ -11791,6 +11791,13 @@ async function fitPcbSnapshotViewport(requested: PcbSnapshotFitMode): Promise<{
  * exporter is not exposed by public `eda.*` and must not be claimed here.
  */
 const pcbSnapshot: Handler = async (payload) => {
+	// A hidden tab does not repaint its canvas: the capture would silently return
+	// the last painted frame (live 2026-10-13: identical PNG while the layout had
+	// moved). Refuse before capturing instead of shipping a stale image.
+	if (pageVisibility() === 'hidden') {
+		throw new ActionError(ErrorCodes.PRECONDITION_REFUSED,
+			'The EasyEDA tab is hidden, so the canvas is not repainted and a capture would be stale. Bring the EasyEDA tab to the foreground and retry, or render from readback data (`easyeda pcb layout render --actual`).');
+	}
 	const tabId = optionalString(payload, 'tabId');
 	const fitMode = pcbSnapshotFitMode(payload);
 	// Optional sha256 of the PREVIOUS snapshot (caller threads it back in). When

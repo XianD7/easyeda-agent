@@ -117,6 +117,9 @@ func (c *conn) applyResponseContext(ctx protocol.Context, now time.Time) {
 	if ctx.Unit != "" {
 		c.ctx.Unit = ctx.Unit
 	}
+	if ctx.PageVisibility != "" {
+		c.ctx.PageVisibility = ctx.PageVisibility
+	}
 	c.lastSeen = now
 }
 

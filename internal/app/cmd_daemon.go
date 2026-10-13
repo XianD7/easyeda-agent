@@ -186,6 +186,11 @@ func newDaemonHealthCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command
 			if result.HostCompatibility != nil {
 				fmt.Fprintln(stderr, hostCompatibilitySummary(*result.HostCompatibility))
 			}
+			if result.Found != nil {
+				for _, line := range hiddenPageWarnings(result.Found.Raw) {
+					fmt.Fprintln(stderr, line)
+				}
+			}
 			if result.Found == nil {
 				return errActionFailed // daemon absent; response already printed
 			}

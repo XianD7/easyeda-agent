@@ -44,8 +44,24 @@ export function documentTypeLabel(documentType: number | undefined): string | un
  *
  * @returns a partial response context
  */
+/**
+ * Host page visibility (document.visibilityState) read through the real global,
+ * since the extension sandbox shadows module-scope `document`. A hidden tab has
+ * its timers throttled and its canvas left unpainted, so waits time out and
+ * canvas captures go stale; callers report it rather than guess.
+ */
+export function pageVisibility(): string | undefined {
+	try {
+		const state = (globalThis as unknown as { window?: { document?: { visibilityState?: unknown } } }).window?.document?.visibilityState;
+		return typeof state === 'string' ? state : undefined;
+	}
+	catch { return undefined; }
+}
+
 export async function readResponseContext(): Promise<ResponseContext> {
 	const context: ResponseContext = {};
+	const visibility = pageVisibility();
+	if (visibility) context.pageVisibility = visibility;
 
 	try {
 		const project = await eda.dmt_Project.getCurrentProjectInfo();
@@ -138,6 +154,9 @@ export async function buildContextFrame(windowId: string): Promise<ContextFrame>
 	}
 	if (ctx.tabId) {
 		frame.tabId = ctx.tabId;
+	}
+	if (ctx.pageVisibility) {
+		frame.pageVisibility = ctx.pageVisibility;
 	}
 	return frame;
 }

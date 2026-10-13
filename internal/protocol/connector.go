@@ -67,16 +67,19 @@ type ContextMessage struct {
 	DocumentType string `json:"documentType"`
 	TabID        string `json:"tabId"`
 	Unit         string `json:"unit"`
+	// PageVisibility mirrors Context.PageVisibility (heartbeat context frames).
+	PageVisibility string `json:"pageVisibility,omitempty"`
 }
 
 // Context returns the project/document context carried by this message.
 func (m ContextMessage) Context() Context {
 	return Context{
-		ProjectUUID:  m.ProjectUUID,
-		ProjectName:  m.ProjectName,
-		DocumentUUID: m.DocumentUUID,
-		DocumentType: m.DocumentType,
-		TabID:        m.TabID,
-		Unit:         m.Unit,
+		ProjectUUID:    m.ProjectUUID,
+		ProjectName:    m.ProjectName,
+		DocumentUUID:   m.DocumentUUID,
+		DocumentType:   m.DocumentType,
+		TabID:          m.TabID,
+		Unit:           m.Unit,
+		PageVisibility: m.PageVisibility,
 	}
 }

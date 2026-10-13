@@ -123,6 +123,10 @@ type Context struct {
 	DocumentType string `json:"documentType,omitempty"`
 	TabID        string `json:"tabId,omitempty"`
 	Unit         string `json:"unit,omitempty"`
+	// PageVisibility is the host page's document.visibilityState. "hidden"
+	// means throttled timers and an unpainted canvas: waits time out and canvas
+	// captures go stale. Diagnostic evidence only; never a routing key.
+	PageVisibility string `json:"pageVisibility,omitempty"`
 }
 
 type Artifact struct {

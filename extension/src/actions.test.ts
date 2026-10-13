@@ -127,6 +127,20 @@ test('pcb.snapshot defaults to the public board-outline fit and labels the viewp
 	finally { delete (globalThis as any).eda; }
 });
 
+test('pcb.snapshot refuses while the EasyEDA tab is hidden instead of returning a stale frame', async () => {
+	let captures = 0;
+	(globalThis as any).eda = {
+		dmt_EditorControl: { getCurrentRenderedAreaImage: async () => { captures++; return new Blob(['old'], { type: 'image/png' }); } },
+		pcb_Document: { zoomToBoardOutline: async () => true },
+	};
+	(globalThis as any).window = { document: { visibilityState: 'hidden' } };
+	try {
+		await assert.rejects(runAction('pcb.snapshot', {}), (err: any) => err.code === 'PRECONDITION_REFUSED' && /hidden/.test(err.message));
+		assert.equal(captures, 0, 'no capture may be taken from an unpainted canvas');
+	}
+	finally { delete (globalThis as any).eda; delete (globalThis as any).window; }
+});
+
 test('pcb.snapshot reports the public zoom-to-all fallback when board fit is unavailable', async () => {
 	let allFits = 0;
 	(globalThis as any).eda = {
