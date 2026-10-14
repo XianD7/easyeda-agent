@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zhoushoujianwork/easyeda-agent/internal/autostart"
 	"github.com/zhoushoujianwork/easyeda-agent/internal/selfupdate"
 	"github.com/zhoushoujianwork/easyeda-agent/internal/version"
 )
@@ -32,11 +33,12 @@ type updateReport struct {
 	CLI             *selfupdate.CLIOutcome `json:"cli,omitempty"`
 	Skills          []updateSkillRow       `json:"skills,omitempty"`
 	Connector       *connectorReport       `json:"connector,omitempty"`
-	Behind          int                    `json:"behind"`          // components behind the target
-	Mismatched      int                    `json:"mismatched"`      // components at a different or unknown version
-	Unverified      int                    `json:"unverified"`      // live components that could not be checked
-	RestartRequired bool                   `json:"restartRequired"` // deprecated compatibility field; always false
-	Ready           bool                   `json:"ready"`           // exact CLI/Skill/daemon + compatible connector
+	Behind          int                    `json:"behind"`                  // components behind the target
+	Mismatched      int                    `json:"mismatched"`              // components at a different or unknown version
+	Unverified      int                    `json:"unverified"`              // live components that could not be checked
+	RestartRequired bool                   `json:"restartRequired"`         // deprecated compatibility field; always false
+	DaemonRestart   string                 `json:"daemonRestart,omitempty"` // restarted | failed: <reason> (autostart-managed daemon only)
+	Ready           bool                   `json:"ready"`                   // exact CLI/Skill/daemon + compatible connector
 	Notes           []string               `json:"notes,omitempty"`
 }
 
@@ -61,7 +63,8 @@ type connectorReport struct {
 	DaemonVersion   string   `json:"daemonVersion,omitempty"`
 	DaemonStatus    string   `json:"daemonStatus"` // current | mismatch | unknown | not-running
 	DaemonPort      int      `json:"daemonPort,omitempty"`
-	Versions        []string `json:"versions,omitempty"` // distinct connector versions across windows
+	DaemonAutostart bool     `json:"daemonAutostart,omitempty"` // daemon is managed by `daemon autostart`
+	Versions        []string `json:"versions,omitempty"`        // distinct connector versions across windows
 	Windows         int      `json:"windows"`
 	Status          string   `json:"status"` // ok | compatible | behind | mismatch | unknown | no-daemon | no-window
 }
@@ -80,6 +83,7 @@ func newUpdateCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Command {
 		jsonOut       bool
 		localDir      string
 		localBinary   string
+		restartDaemon bool
 	)
 	c := &cobra.Command{
 		Use:     "update",
@@ -96,6 +100,11 @@ Covers the two pieces that CAN be updated programmatically:
 The EasyEDA connector .eext is only REPORTED: a sideloaded extension has no
 in-place auto-update, so a stale connector has to be re-imported by hand
 (marketplace installs update themselves, but lag the CLI).
+
+When the daemon runs under ` + "`easyeda daemon autostart`" + `, it is restarted through the
+service manager once the binary is replaced, so it runs the new version
+(--restart-daemon=false to leave it). A daemon started in a terminal is only
+reported; restart it there.
 
 A dev build (git-describe stamp) is never overwritten without --force.
 If the binary lives in a root-owned dir, re-run with sudo.`,
@@ -227,6 +236,17 @@ If the binary lives in a root-owned dir, re-run with sudo.`,
 				}
 			}
 
+			// ── autostart-managed daemon ─────────────────────────────────────
+			if rep.Connector != nil {
+				rep.Connector.DaemonAutostart = autostart.Enabled()
+			}
+			if restartDaemon && !checkOnly && rep.CLI != nil && rep.CLI.Status == "updated" &&
+				rep.Connector != nil && rep.Connector.DaemonAutostart {
+				rep.DaemonRestart = restartAutostartDaemon(cfg, target, rep.Connector.Windows, stderr)
+				rep.Connector = probeConnector(cfg, target)
+				rep.Connector.DaemonAutostart = true
+			}
+
 			rep.Behind = countBehind(rep)
 			rep.Mismatched, rep.Unverified = countVersionGateProblems(rep)
 			rep.RestartRequired = false
@@ -263,7 +283,31 @@ If the binary lives in a root-owned dir, re-run with sudo.`,
 	c.Flags().BoolVar(&force, "force", false, "overwrite a dev build / re-install even when already at the target")
 	c.Flags().BoolVar(&createMissing, "create-missing", false, "install the skill into a client dir that doesn't exist yet")
 	c.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
+	c.Flags().BoolVar(&restartDaemon, "restart-daemon", true, "after replacing the binary, restart a daemon managed by `daemon autostart`")
 	return c
+}
+
+// restartAutostartDaemon restarts the service-managed daemon so it runs the
+// replaced binary, waits for it to answer as the target version and gives
+// previously connected EasyEDA windows a moment to reconnect.
+func restartAutostartDaemon(cfg *appConfig, target string, windows int, log io.Writer) string {
+	fmt.Fprintf(log, "update: restarting the autostart daemon to load v%s\n", target)
+	if err := autostart.Restart(); err != nil {
+		return "failed: " + err.Error()
+	}
+	if got, ok, _ := waitDaemon(cfg, func(v string, _ int) bool { return strings.TrimPrefix(v, "v") == target }, nil); !ok {
+		if got == "" {
+			return fmt.Sprintf("failed: daemon did not answer within %s", daemonReadyTimeout)
+		}
+		return fmt.Sprintf("failed: daemon answers as %s", got)
+	}
+	if windows > 0 {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) && probeConnector(cfg, target).Windows == 0 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	return "restarted"
 }
 
 // checkCLI is the read-only half of the CLI update: same verdicts as
@@ -459,9 +503,17 @@ func countVersionGateProblems(rep updateReport) (mismatched, unverified int) {
 // after an update: restart the daemon, re-import the connector, install skills.
 func updateNotes(rep updateReport) []string {
 	var notes []string
+	if strings.HasPrefix(rep.DaemonRestart, "failed") {
+		notes = append(notes, "autostart daemon restart "+rep.DaemonRestart)
+	}
 	if rep.Connector != nil && rep.Connector.DaemonStatus == "mismatch" {
-		notes = append(notes, "daemon is still running a DIFFERENT binary — restart it with v"+rep.Target+
-			" (stop the current `easyeda daemon start`, then start it again)")
+		if rep.Connector.DaemonAutostart {
+			notes = append(notes, "daemon is still running a DIFFERENT binary — restart it with v"+rep.Target+
+				" (`easyeda daemon autostart restart`)")
+		} else {
+			notes = append(notes, "daemon is still running a DIFFERENT binary — restart it with v"+rep.Target+
+				" (stop the current `easyeda daemon start`, then start it again)")
+		}
 	}
 	if rep.Connector != nil && (rep.Connector.Status == "behind" || rep.Connector.Status == "mismatch") {
 		notes = append(notes, fmt.Sprintf(
@@ -535,7 +587,14 @@ func printUpdateReport(w io.Writer, rep updateReport) {
 		row("skill:"+s.Client, s.Status, ver, where)
 	}
 	if c := rep.Connector; c != nil {
-		row("daemon", c.DaemonStatus, trimV(c.DaemonVersion), fmt.Sprintf("port :%d", c.DaemonPort))
+		daemonWhere := fmt.Sprintf("port :%d", c.DaemonPort)
+		if c.DaemonAutostart {
+			daemonWhere += "  [autostart]"
+		}
+		if rep.DaemonRestart == "restarted" {
+			daemonWhere += "  (restarted)"
+		}
+		row("daemon", c.DaemonStatus, trimV(c.DaemonVersion), daemonWhere)
 		ver, where := "—", ""
 		switch c.Status {
 		case "no-daemon":

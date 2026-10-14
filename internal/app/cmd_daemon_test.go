@@ -57,3 +57,16 @@ func TestEnsurePortAvailable_ForeignHeadlessRefuses(t *testing.T) {
 		t.Error("foreign listener must NOT have been killed/freed")
 	}
 }
+
+func TestWithoutDetach(t *testing.T) {
+	got := withoutDetach([]string{"daemon", "start", "--detach", "--ports", "1-1", "--detach=true", "--detach=false"})
+	want := []string{"daemon", "start", "--ports", "1-1", "--detach=false"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v", got)
+		}
+	}
+}

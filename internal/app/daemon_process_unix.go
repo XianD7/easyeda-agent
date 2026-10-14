@@ -40,6 +40,10 @@ func pidCommand(pid int) string {
 	return strings.TrimSpace(string(out))
 }
 
+// detachedProcAttr starts the background daemon in its own session, so it
+// outlives the terminal that ran `daemon start --detach`.
+func detachedProcAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }
+
 func termPID(pid int) error {
 	if pid <= 0 || pid == os.Getpid() {
 		return fmt.Errorf("refusing invalid/self PID %d", pid)

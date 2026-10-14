@@ -6,7 +6,17 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"golang.org/x/sys/windows"
 )
+
+// detachedProcAttr starts the background daemon without a console, so no
+// window stays open and closing the terminal does not end it (as mutagen
+// starts its daemon).
+func detachedProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP, HideWindow: true}
+}
 
 func listenerPID(port int) int {
 	out, err := exec.Command("netstat.exe", "-ano", "-p", "tcp").Output()

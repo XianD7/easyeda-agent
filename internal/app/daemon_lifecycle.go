@@ -21,6 +21,9 @@ func newDaemonStopCmd(cfg *appConfig, stdout io.Writer) *cobra.Command {
 		Long: "Stop the identified local daemon. Save documents first. A daemon restart does not cancel in-flight editor actions. Refuses remote hosts, unidentified processes and unreadable health responses. Stop make dev in its own terminal to prevent it restarting the daemon.",
 		Args: cobra.NoArgs, Example: "  easyeda daemon stop\n  easyeda daemon stop --ports 60832-60832",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if handled, err := delegateToManager(cmd, cfg, stdout); handled {
+				return err
+			}
 			port, _, err := cfg.portRange()
 			if err != nil {
 				return err
@@ -38,6 +41,9 @@ func newDaemonRestartCmd(cfg *appConfig, stdout, stderr io.Writer) *cobra.Comman
 	c.Long = "Save readable documents first; restarting does not cancel editor actions. Stops only an identified local daemon, then starts this binary with the supplied start flags (blocks until SIGINT/SIGTERM). Startup flags are not inherited from the old process.\n\n" + c.Long
 	c.Example = "  easyeda daemon restart --auto-update-skill=false\n  easyeda daemon restart --autosave-debounce 5s"
 	c.RunE = func(cmd *cobra.Command, args []string) error {
+		if handled, err := delegateToManager(cmd, cfg, stdout); handled {
+			return err
+		}
 		port, _, err := cfg.portRange()
 		if err != nil {
 			return err
