@@ -102,8 +102,9 @@ in-place auto-update, so a stale connector has to be re-imported by hand
 (marketplace installs update themselves, but lag the CLI).
 
 When the daemon runs under ` + "`easyeda daemon autostart`" + `, it is restarted through the
-service manager once the binary is replaced, so it runs the new version
-(--restart-daemon=false to leave it). A daemon started in a terminal is only
+service manager once the binary is replaced, or whenever it runs a version other
+than the current binary, so it runs the new version (--restart-daemon=false to
+leave it). A daemon started in a terminal is only
 reported; restart it there.
 
 A dev build (git-describe stamp) is never overwritten without --force.
@@ -240,8 +241,10 @@ If the binary lives in a root-owned dir, re-run with sudo.`,
 			if rep.Connector != nil {
 				rep.Connector.DaemonAutostart = autostart.Enabled()
 			}
-			if restartDaemon && !checkOnly && rep.CLI != nil && rep.CLI.Status == "updated" &&
-				rep.Connector != nil && rep.Connector.DaemonAutostart {
+			// Restart when this run replaced the binary, or when the binary was
+			// already current but the managed daemon still runs another version.
+			if restartDaemon && !checkOnly && rep.CLI != nil && rep.Connector != nil && rep.Connector.DaemonAutostart &&
+				(rep.CLI.Status == "updated" || (rep.CLI.Status == "up-to-date" && rep.Connector.DaemonStatus == "mismatch")) {
 				rep.DaemonRestart = restartAutostartDaemon(cfg, target, rep.Connector.Windows, stderr)
 				rep.Connector = probeConnector(cfg, target)
 				rep.Connector.DaemonAutostart = true
@@ -507,10 +510,11 @@ func updateNotes(rep updateReport) []string {
 		notes = append(notes, "autostart daemon restart "+rep.DaemonRestart)
 	}
 	if rep.Connector != nil && rep.Connector.DaemonStatus == "mismatch" {
-		if rep.Connector.DaemonAutostart {
+		switch {
+		case rep.Connector.DaemonAutostart:
 			notes = append(notes, "daemon is still running a DIFFERENT binary — restart it with v"+rep.Target+
-				" (`easyeda daemon autostart restart`)")
-		} else {
+				" (`easyeda update` restarts the autostart daemon)")
+		default:
 			notes = append(notes, "daemon is still running a DIFFERENT binary — restart it with v"+rep.Target+
 				" (stop the current `easyeda daemon start`, then start it again)")
 		}
