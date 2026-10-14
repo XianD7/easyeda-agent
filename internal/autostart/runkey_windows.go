@@ -119,3 +119,15 @@ func (runKeyBackend) stop() error {
 }
 
 func (b runKeyBackend) restart() error { return b.start() }
+
+func (runKeyBackend) executable() (string, error) {
+	v, err := registered()
+	if err != nil || v == "" {
+		return "", err
+	}
+	args, err := windows.DecomposeCommandLine(v)
+	if err != nil || len(args) == 0 {
+		return "", fmt.Errorf("parse HKCU\\%s\\%s %q: %v", runKeyPath, Name, v, err)
+	}
+	return args[0], nil
+}

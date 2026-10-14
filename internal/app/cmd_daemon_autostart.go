@@ -30,9 +30,10 @@ func newDaemonAutostartCmd(cfg *appConfig, stdout io.Writer) *cobra.Command {
   Linux    systemd --user unit; systemd restarts the daemon if it exits
   Windows  HKCU Run entry running ` + "`daemon start --detach`" + ` at login
 
-While launchd/systemd manage the daemon, ` + "`daemon start|stop|restart`" + ` in a terminal
-are handed to them instead of competing for the port. ` + "`easyeda update`" + ` restarts
-a registered daemon after replacing the binary.`,
+While launchd/systemd manage the daemon, ` + "`daemon start|stop|restart`" + ` run with the
+registered binary are handed to them instead of competing for the port; other
+builds (make dev, go run) run as before. ` + "`easyeda update`" + ` restarts a registered
+daemon after replacing the binary.`,
 		Args: cobra.NoArgs,
 	}
 	c.AddCommand(
@@ -188,11 +189,16 @@ func daemonLogDir() string {
 	return filepath.Join(home, ".easyeda-agent", "logs")
 }
 
-// delegateToManager hands `daemon start|stop|restart` from a terminal to
-// launchd/systemd while they own the daemon: a terminal daemon would otherwise
-// be replaced by the one they restart. It reports whether it handled the call.
+// delegateToManager hands `daemon start|stop|restart`, run from a terminal
+// with the registered binary, to launchd/systemd, so the managed daemon stays
+// the one they track. Other builds (make dev, go run) are not handed over:
+// they run as before and take the port over, and the managed daemon exits
+// cleanly without being restarted. It reports whether it handled the call.
 func delegateToManager(cmd *cobra.Command, cfg *appConfig, stdout io.Writer) (bool, error) {
 	if !autostart.Supervised() || !autostart.Interactive() || !autostart.Enabled() {
+		return false, nil
+	}
+	if exe, err := selfupdate.CurrentBinaryPath(); err != nil || !autostart.Owns(exe) {
 		return false, nil
 	}
 	action := cmd.Name()
@@ -219,7 +225,8 @@ func delegateToManager(cmd *cobra.Command, cfg *appConfig, stdout io.Writer) (bo
 		return true, nil
 	}
 	fmt.Fprintf(stdout, "Daemon is managed by %s (`easyeda daemon autostart`); %s handed to it.\n", manager, action)
-	return true, reportDaemonReady(cfg, stdout, "", autostart.Query(daemonLogDir()).Logs)
+	// This binary is the registered one, so the managed daemon runs its version.
+	return true, reportDaemonReady(cfg, stdout, version.Version, autostart.Query(daemonLogDir()).Logs)
 }
 
 // daemonIdentity reads version and PID from the daemon on the fixed port.

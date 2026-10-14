@@ -182,9 +182,9 @@ easyeda daemon autostart disable    # 关闭自启并停止 daemon
 | Windows | 当前用户的 `HKCU\...\Run` 启动项 | 不拉起，需手动 `easyeda daemon start` |
 
 - `easyeda update` 替换程序后会自动重启 daemon，无需手动操作。
-- macOS / Linux 由系统托管 daemon，这时在终端执行 `daemon start|stop|restart` 会交给系统处理，
-  不会出现两个 daemon 抢端口。启动参数以开启自启时为准；要修改，带上新参数重新执行
-  `autostart enable`。
+- macOS / Linux 由系统托管 daemon，这时用同一个 `easyeda` 在终端执行 `daemon start|stop|restart`
+  会交给系统处理，不会出现两个 daemon 抢端口。启动参数以开启自启时为准；要修改，带上新参数
+  重新执行 `autostart enable`。其他构建（`make dev`、`go run`）不受影响，照常运行并接管端口。
 - 后台运行的日志在 `~/.easyeda-agent/logs/`；Linux 用 `journalctl --user -u easyeda-agent`。
 - Linux 默认在用户登录后启动；需要开机即运行时执行 `loginctl enable-linger`。Windows 登录时会
   短暂闪过一个控制台窗口。

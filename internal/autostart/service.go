@@ -3,6 +3,11 @@ package autostart
 import (
 	"errors"
 	"fmt"
+	"html"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/kardianos/service"
 )
@@ -196,6 +201,9 @@ func (b serviceBackend) start() error {
 	if s, err := svc.Status(); err == nil && s == service.StatusRunning {
 		return nil
 	}
+	if b.platform == platformLaunchd {
+		return reload(svc)
+	}
 	return svc.Start()
 }
 
@@ -215,10 +223,67 @@ func (b serviceBackend) restart() error {
 	if err != nil {
 		return err
 	}
-	if s, err := svc.Status(); err == nil && s == service.StatusStopped {
-		return svc.Start() // launchd refuses to unload a job that is not loaded
+	if b.platform == platformLaunchd {
+		return reload(svc)
 	}
 	return svc.Restart()
+}
+
+// reload unloads and loads the launchd job. A job that exited cleanly stays
+// loaded but idle, and `launchctl load` then fails with "Load failed: 5:
+// Input/output error"; unloading first (ignoring "not loaded") always gives a
+// fresh process, from the binary currently on disk.
+func reload(svc service.Service) error {
+	_ = svc.Stop()
+	return svc.Start()
+}
+
+// unitPath is where the library writes the registration for this platform.
+func (b serviceBackend) unitPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if b.platform == platformLaunchd {
+		return filepath.Join(home, "Library", "LaunchAgents", Name+".plist"), nil
+	}
+	return filepath.Join(home, ".config", "systemd", "user", Name+".service"), nil
+}
+
+func (b serviceBackend) executable() (string, error) {
+	p, err := b.unitPath()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", err
+	}
+	if b.platform == platformLaunchd {
+		return plistExecutable(string(data))
+	}
+	return unitExecutable(string(data))
+}
+
+var plistProgram = regexp.MustCompile(`<key>ProgramArguments</key>\s*<array>\s*<string>([^<]*)</string>`)
+
+func plistExecutable(plist string) (string, error) {
+	m := plistProgram.FindStringSubmatch(plist)
+	if m == nil {
+		return "", errors.New("no ProgramArguments in the launchd agent")
+	}
+	return html.UnescapeString(m[1]), nil
+}
+
+// unitExecutable reverses the library's cmdEscape (spaces as \x20).
+func unitExecutable(unit string) (string, error) {
+	for _, line := range strings.Split(unit, "\n") {
+		if rest, ok := strings.CutPrefix(line, "ExecStart="); ok {
+			path, _, _ := strings.Cut(rest, " ")
+			return strings.ReplaceAll(path, `\x20`, " "), nil
+		}
+	}
+	return "", errors.New("no ExecStart in the systemd unit")
 }
 
 // noop satisfies service.Interface; the daemon runs through its own

@@ -78,16 +78,14 @@ running the daemon on a different port with --ports also needs the connector's
 escape hatch — set its "daemonPorts" extension user config (see the header of
 extension/src/transport.ts).
 
---detach runs the same command in the background, appends its output to
-~/.easyeda-agent/logs/easyeda-agent.{out,err}.log and returns once it answers
-/health. To start the daemon at every login use ` + "`easyeda daemon autostart enable`" + `;
-while launchd/systemd manage it, start/stop/restart here are handed to them.`,
+To start the daemon at every login use ` + "`easyeda daemon autostart enable`" + `;
+while launchd/systemd manage it, start/stop/restart run with the registered
+binary are handed to them.`,
 		Args: cobra.NoArgs,
 		Example: `  easyeda daemon start
   easyeda daemon start --autosave-debounce 5s
   easyeda daemon start --autosave-debounce 0   # disable autosave
-  easyeda daemon start --auto-update-skill=false # don't sync skill on startup
-  easyeda daemon start --detach                  # run in the background, no terminal needed`,
+  easyeda daemon start --auto-update-skill=false # don't sync skill on startup`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if handled, err := delegateToManager(cmd, cfg, stdout); handled {
 				return err
@@ -137,8 +135,12 @@ while launchd/systemd manage it, start/stop/restart here are handed to them.`,
 		"autosave a window this long after its last mutating action (0 = disable)")
 	c.Flags().BoolVar(&autoUpdateSkill, "auto-update-skill", true,
 		"on startup, sync installed skill dirs to this daemon's release; skip dev builds (best-effort)")
+	// --detach exists for the Windows autostart Run entry: Explorer runs that
+	// command in a console window, which a foreground daemon would keep open.
+	// It starts the same command in the background and returns once it serves.
 	c.Flags().BoolVar(&detach, "detach", false,
-		"run in the background and return once the daemon answers /health")
+		"run in the background and return once the daemon answers /health (used by the Windows autostart entry)")
+	_ = c.Flags().MarkHidden("detach")
 	return c
 }
 

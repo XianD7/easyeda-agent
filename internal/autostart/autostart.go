@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 // Name is the launchd label, systemd unit and Run entry name.
@@ -39,6 +41,9 @@ var PassEnv = []string{
 	"EASYEDA_AUDIT_DIR",
 	"EASYEDA_WORKFLOW_DIR",
 }
+
+// caseInsensitivePaths: Windows paths compare without case.
+var caseInsensitivePaths = runtime.GOOS == "windows"
 
 // ErrUnsupported is returned where no per-user login mechanism is available
 // (for example Linux without systemd).
@@ -77,6 +82,8 @@ type backend interface {
 	start() error
 	stop() error
 	restart() error
+	// executable is the binary the registration runs.
+	executable() (string, error)
 	logHint(logDir string) string
 }
 
@@ -137,6 +144,39 @@ func Enabled() bool {
 	}
 	ok, err := platform.enabled()
 	return ok && err == nil
+}
+
+// Owns reports whether exe is the binary the registration runs. Only that
+// binary's terminal lifecycle commands are handed to the service manager; a
+// different build (a checkout's bin/easyeda under `make dev`, `go run`) keeps
+// running itself and simply takes the port over.
+func Owns(exe string) bool {
+	if platform == nil || exe == "" {
+		return false
+	}
+	reg, err := platform.executable()
+	if err != nil || reg == "" {
+		return false
+	}
+	return samePath(reg, exe)
+}
+
+func samePath(a, b string) bool {
+	a, b = resolvePath(a), resolvePath(b)
+	if caseInsensitivePaths {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func resolvePath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		p = r
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return filepath.Clean(p)
 }
 
 // Start starts the registered daemon now.

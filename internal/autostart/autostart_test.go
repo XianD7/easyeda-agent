@@ -46,6 +46,38 @@ func TestServiceConfigMarksManagedDaemon(t *testing.T) {
 	}
 }
 
+func TestRegisteredExecutableIsReadBack(t *testing.T) {
+	plist := "<key>ProgramArguments</key>\n\t<array>\n\t\t<string>/Users/a b/bin/easy&amp;eda</string>\n\t\t<string>daemon</string>"
+	if got, err := plistExecutable(plist); err != nil || got != "/Users/a b/bin/easy&eda" {
+		t.Fatalf("plist: %q, %v", got, err)
+	}
+	unit := "[Service]\nExecStart=/home/a\\x20b/bin/easyeda \"daemon\" \"start\"\nRestart=on-failure\n"
+	if got, err := unitExecutable(unit); err != nil || got != "/home/a b/bin/easyeda" {
+		t.Fatalf("unit: %q, %v", got, err)
+	}
+	if _, err := unitExecutable("[Service]\n"); err == nil {
+		t.Fatal("missing ExecStart accepted")
+	}
+}
+
+func TestSamePathFollowsSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "easyeda")
+	if err := os.WriteFile(real, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	if !samePath(real, link) {
+		t.Fatal("symlink to the registered binary not recognised")
+	}
+	if samePath(real, filepath.Join(dir, "other")) {
+		t.Fatal("different binary treated as the registered one")
+	}
+}
+
 func TestInteractive(t *testing.T) {
 	t.Setenv(ManagedEnv, "")
 	if !Interactive() {
@@ -109,6 +141,27 @@ func TestAutostartLive(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(run(exe, "daemon", "autostart", "status", "--json")), &st); err != nil || !st.Enabled || !st.Serving {
 		t.Fatalf("status = %+v, %v", st, err)
+	}
+
+	if Supervised() {
+		// A different build (make dev, go run) is not handed to the manager: it
+		// takes the port over, and the managed daemon exits cleanly without
+		// being restarted.
+		other := filepath.Join(dir, "other-easyeda")
+		if runtime.GOOS == "windows" {
+			other += ".exe"
+		}
+		build(other, "v0.0.0-autostart.other")
+		t.Log(run(other, "daemon", "start", "--detach", "--auto-update-skill=false"))
+		waitVersion(t, port, "v0.0.0-autostart.other")
+		time.Sleep(3 * time.Second) // longer than systemd's RestartSec
+		if got := health(port); got != "v0.0.0-autostart.other" {
+			t.Fatalf("manager took the port back: %q", got)
+		}
+		// The registered binary's start is handed to the manager, which starts
+		// the idle job again and replaces the other build.
+		t.Log(run(exe, "daemon", "start"))
+		waitVersion(t, port, "v0.0.0-autostart.1")
 	}
 
 	// Replace the binary as `easyeda update` does (a running .exe can only be
