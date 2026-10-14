@@ -184,7 +184,7 @@ PATH 上时只打印添加命令，需要自动添加用 `-AddToPath`（下载�
 ### 3. 启动并连接
 
 ```bash
-easyeda daemon start
+easyeda daemon start            # 或 easyeda daemon autostart enable：登录后自动启动，不用常开终端
 ```
 
 打开目标 EasyEDA 工程，并启用 **设置 → 允许外部交互**。开始操作前运行健康检查；需要安装对账时再显式运行版本检查：

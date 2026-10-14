@@ -62,6 +62,10 @@ easyeda project info --project <name>   # first typed action round-trip
 
 ## 1. Start the daemon
 
+If you turned on login autostart (`easyeda daemon autostart enable`), turn it off
+first with `easyeda daemon autostart disable`. Otherwise `daemon start` is handed to
+launchd/systemd, which keep running the installed binary instead of your build.
+
 ```bash
 make dev                 # air live-reload; leave running in a terminal
 # or one-shot:

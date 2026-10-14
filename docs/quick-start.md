@@ -50,6 +50,15 @@ easyeda daemon start        # 前台阻塞运行,Ctrl-C 退出;建议单开一�
 
 daemon 默认固定监听 `60832`，连接器重试同一端口；不要额外启动多个 daemon。
 
+不想一直开着终端，可以改为登录后自动启动(macOS / Linux / Windows 都支持，无需管理员权限)。
+开启后升级时 `easyeda update` 会自动重启 daemon，换上新版本:
+
+```bash
+easyeda daemon autostart enable     # 开启并立即启动;关闭用 disable,查看用 status
+```
+
+各系统的差异见[环境配置](../.agents/skills/easyeda-agent/references/environment-setup.md)。
+
 ### 3. 导入连接器 `.eext`
 
 从 [GitHub Release](https://github.com/zhoushoujianwork/easyeda-agent/releases/latest) 下载

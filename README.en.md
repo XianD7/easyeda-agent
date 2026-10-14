@@ -326,6 +326,8 @@ go run ./cmd/easyeda call system.health
 - `GET /eda` — WebSocket the EasyEDA connector registers on (daemon sends a `handshake` on connect)
 - `POST /action` — a typed action envelope to forward to a connected window
 
+To skip the terminal, `daemon autostart enable` starts the daemon at every login using the system's own per-user mechanism (macOS LaunchAgent, Linux `systemd --user`, Windows `HKCU\...\Run`; no administrator rights). `easyeda update` then restarts it on the new binary by itself.
+
 `daemon health` probes for the local `easyeda-agent` daemon; the daemon and connector use port `60832` by default. With the daemon running it reports `status: found` and lists connected windows; otherwise a clean `not_found` result is expected.
 
 `call <action>` finds the running daemon and posts a typed action to it. `system.health` is answered by the daemon itself (no connector required); window-scoped actions need a connected EasyEDA window and return `NO_CONNECTOR` until the connector extension is running.

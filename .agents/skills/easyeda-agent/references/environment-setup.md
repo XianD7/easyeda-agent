@@ -85,7 +85,8 @@ SHA-256 校验。`EASYEDA_GITHUB_PROXY=https://mirror.example/{url}` 可替换�
 
 1. 运行 `easyeda update` 更新到所选版本；需要精确 Release 时显式传 `--version`。
    `--preserve` 会形成混合内容，不能作为纯 Release 一致性的证据。
-2. 停止旧 daemon，用升级后的 `easyeda daemon start` 重启。
+2. 重启 daemon 加载新版本。已开启登录自启的，`update` 会自动完成这一步，报告中 daemon
+   一行显示 `(restarted)`；否则停止旧 daemon，再运行 `easyeda daemon start`。
 3. 纯 patch 更新时保留现有 Connector，不升级插件市场版本，也不重开 EasyEDA。仅当
    Connector 与 latest 跨 minor/major 不兼容时，从 `update` 输出的 GitHub Release 地址取得
    对应 `.eext`；在扩展管理器卸载旧侧载项、导入新包，然后完全退出并重开 EasyEDA。
@@ -163,11 +164,30 @@ V4 的权限入口仍从**高级 → 扩展管理器 → 已安装 → 选中连
 “Daemon not found”，daemon 看不到任何连接尝试；此时先核对权限，不要重启 daemon。
 Online 与 Half Offline 模式的扩展存储互不共用，切换运行模式后需在新模式下重新导入并授权。
 
-非开发环境在单独终端运行：
+非开发环境在单独终端运行，或开启登录自启：
 
 ```bash
-easyeda daemon start
+easyeda daemon start                # 前台运行，关闭终端或 Ctrl-C 即停止
+easyeda daemon autostart enable     # 改为登录后自动在后台运行，并立即启动
+easyeda daemon autostart status     # 查看是否已开启、daemon 版本和日志位置
+easyeda daemon autostart disable    # 关闭自启并停止 daemon
 ```
+
+登录自启不需要常开终端，也不需要管理员权限，使用各系统自带的机制：
+
+| 系统 | 机制 | daemon 意外退出时 |
+|---|---|---|
+| macOS | 用户级 LaunchAgent | 自动拉起 |
+| Linux | `systemd --user` 服务 | 自动拉起 |
+| Windows | 当前用户的 `HKCU\...\Run` 启动项 | 不拉起，需手动 `easyeda daemon start` |
+
+- `easyeda update` 替换程序后会自动重启 daemon，无需手动操作。
+- macOS / Linux 由系统托管 daemon，这时在终端执行 `daemon start|stop|restart` 会交给系统处理，
+  不会出现两个 daemon 抢端口。启动参数以开启自启时为准；要修改，带上新参数重新执行
+  `autostart enable`。
+- 后台运行的日志在 `~/.easyeda-agent/logs/`；Linux 用 `journalctl --user -u easyeda-agent`。
+- Linux 默认在用户登录后启动；需要开机即运行时执行 `loginctl enable-linger`。Windows 登录时会
+  短暂闪过一个控制台窗口。
 
 当前默认固定监听 **60832**，连接器重试该端口。`daemon start` 会接管同端口旧的
 EasyEDA daemon；端口被其他程序占用时按报错处理，不向后寻找另一个 daemon 端口。
@@ -277,7 +297,8 @@ daemon 生命周期命令：`easyeda daemon stop` 停止本机指定端口的已
 进程身份不可确认或 `/health` 不可读时拒绝结束进程，并报告端口、PID 和可获取的进程路径。
 Windows 使用系统端口查询和进程终止接口，不依赖 `lsof`。PID 文件不可写时仍可通过
 `health.pid` 和端口所有者管理；按提示修正 `.easyeda-agent` 目录权限，不以管理员启动作为默认修法。
-`make dev` 管理的进程由其终端停止，否则热重载管理器可能再次启动它。
+`make dev` 管理的进程由其终端停止，否则热重载管理器可能再次启动它。macOS / Linux 开启登录
+自启时，`daemon restart` 交给系统执行，沿用开启自启时的启动参数。
 
 同一目标页出现多个版本或 windowId、反复注册或写请求超时时，先暂停 Apply，并保留
 health、journal 和日志。多个真实工程/窗口可以同时存在；要排除的是同一目标的旧运行时。
